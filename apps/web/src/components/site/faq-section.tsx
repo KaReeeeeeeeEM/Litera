@@ -1,0 +1,5 @@
+import { ChevronDown, CircleHelp } from "lucide-react";
+
+export function FaqSection({ items, title = "Questions, answered clearly." }: { items: readonly (readonly [string,string])[]; title?: string }) {
+  return <section className="border-y bg-muted/30" data-reveal><div className="mx-auto grid max-w-6xl gap-12 px-5 py-24 lg:grid-cols-[.72fr_1.28fr] lg:px-8"><div><CircleHelp className="size-7 text-primary"/><h2 className="mt-5 text-4xl font-semibold tracking-[-0.04em]">{title}</h2><p className="mt-4 leading-7 text-muted-foreground">Open a question to learn how Litera fits into real publishing work.</p></div><div className="rounded-2xl border bg-background px-5">{items.map(([question,answer], index) => <details className="group border-b py-2 last:border-b-0" key={question} open={index===0}><summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-5 font-semibold marker:content-none">{question}<ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180"/></summary><p className="max-w-2xl pb-5 text-sm leading-7 text-muted-foreground">{answer}</p></details>)}</div></div></section>;
+}

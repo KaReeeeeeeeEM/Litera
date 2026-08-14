@@ -1,0 +1,11 @@
+{
+  "name": "Litera",
+  "category": "accessible educational publishing",
+  "stage": "foundation",
+  "primaryLocale": "sw-TZ",
+  "fallbackLocale": "en",
+  "architecture": "modular-monolith",
+  "webApp": "apps/web",
+  "qualityTarget": "WCAG 2.2 AA",
+  "offlineOutput": true
+}

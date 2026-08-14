@@ -1,0 +1,15 @@
+{
+  "name": "litera",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "pnpm --dir apps/web dev",
+    "build": "pnpm --dir apps/web build",
+    "desktop:dev": "pnpm --dir apps/desktop tauri dev",
+    "desktop:build": "pnpm --dir apps/desktop tauri build",
+    "desktop:check": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "lint": "pnpm --dir apps/web lint",
+    "check:standards": "devcanon check ."
+  }
+}

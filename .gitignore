@@ -1,0 +1,11 @@
+node_modules/
+.next/
+target/
+apps/desktop/src-tauri/target/
+.playwright-cli/
+output/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
