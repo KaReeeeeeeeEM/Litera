@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Accessibility, ArrowLeft, ArrowRight, Bug, Check, Heart, ImagePlus, Lightbulb, LoaderCircle, MessageSquareText, Paperclip, Send, Trash2 } from "lucide-react";
+import Image from "next/image";
+import { Accessibility, ArrowLeft, ArrowRight, Bug, Check, Heart, ImagePlus, Lightbulb, LoaderCircle, MessageSquareText, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ const categories = [
 type Category = (typeof categories)[number]["value"];
 type FeedbackDraft = { category: Category | ""; title: string; description: string; email: string };
 type Position = { x: number; y: number } | null;
+type ScreenshotAttachment = { file: File; previewUrl: string };
 
 const initialDraft: FeedbackDraft = { category: "", title: "", description: "", email: "" };
 const stepLabels = ["Kind of feedback", "Tell us more", "Add screenshots", "Review and send"];
@@ -31,7 +33,7 @@ export function FeedbackFab() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<FeedbackDraft>(initialDraft);
-  const [screenshots, setScreenshots] = useState<File[]>([]);
+  const [screenshots, setScreenshots] = useState<ScreenshotAttachment[]>([]);
   const [pending, setPending] = useState(false);
   const [position, setPosition] = useState<Position>(null);
   const [error, setError] = useState("");
@@ -83,6 +85,7 @@ export function FeedbackFab() {
   }
 
   function resetFlow() {
+    screenshots.forEach(({ previewUrl }) => URL.revokeObjectURL(previewUrl));
     setStep(0);
     setDraft(initialDraft);
     setScreenshots([]);
@@ -106,16 +109,31 @@ export function FeedbackFab() {
 
   function addScreenshots(event: React.ChangeEvent<HTMLInputElement>) {
     const incoming = Array.from(event.target.files ?? []);
-    const next = [...screenshots, ...incoming].slice(0, 3);
-    const totalSize = next.reduce((sum, file) => sum + file.size, 0);
-    if (incoming.some((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type)) || next.some((file) => file.size > 3 * 1024 * 1024) || totalSize > 4 * 1024 * 1024) {
-      setError("Use up to 3 PNG, JPG, or WebP images with a combined size below 4 MB.");
+    const currentFiles = screenshots.map(({ file }) => file);
+    let message = "";
+
+    if (screenshots.length + incoming.length > 3) message = "You can attach up to 3 screenshots.";
+    else if (incoming.some((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type))) message = "Screenshots must be PNG, JPG, or WebP images.";
+    else if (incoming.some((file) => file.size > 3 * 1024 * 1024)) message = "Each screenshot must be smaller than 3 MB.";
+    else if ([...currentFiles, ...incoming].reduce((sum, file) => sum + file.size, 0) > 4 * 1024 * 1024) message = "The combined screenshot size must stay below 4 MB.";
+
+    if (message) {
+      setError(message);
+      toast.error(message);
       event.target.value = "";
       return;
     }
-    setScreenshots(next);
+
+    setScreenshots((current) => [...current, ...incoming.map((file) => ({ file, previewUrl: URL.createObjectURL(file) }))]);
     setError("");
     event.target.value = "";
+  }
+
+  function removeScreenshot(index: number) {
+    setScreenshots((current) => {
+      URL.revokeObjectURL(current[index].previewUrl);
+      return current.filter((_, itemIndex) => itemIndex !== index);
+    });
   }
 
   async function submitFeedback() {
@@ -125,7 +143,7 @@ export function FeedbackFab() {
     Object.entries(draft).forEach(([key, value]) => data.append(key, value));
     data.append("page", window.location.href);
     data.append("website", "");
-    screenshots.forEach((file) => data.append("screenshots", file));
+    screenshots.forEach(({ file }) => data.append("screenshots", file));
 
     try {
       const response = await fetch("/api/feedback", { method: "POST", body: data });
@@ -218,7 +236,7 @@ export function FeedbackFab() {
                   </FieldLabel>
                   <Input accept="image/png,image/jpeg,image/webp" className="sr-only" id="feedback-screenshots" multiple onChange={addScreenshots} type="file" />
                 </Field>
-                {screenshots.length ? <ul className="flex flex-col gap-2">{screenshots.map((file, index) => <li className="flex items-center gap-3 rounded-lg border bg-muted/30 p-3" key={`${file.name}-${file.lastModified}`}><Paperclip className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1 truncate text-sm">{file.name}</span><span className="text-xs text-muted-foreground">{formatBytes(file.size)}</span><Button aria-label={`Remove ${file.name}`} onClick={() => setScreenshots((current) => current.filter((_, itemIndex) => itemIndex !== index))} size="icon-sm" type="button" variant="ghost"><Trash2 /></Button></li>)}</ul> : <p className="text-center text-sm text-muted-foreground">No screenshots attached yet. You can continue without one.</p>}
+                {screenshots.length ? <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">{screenshots.map(({ file, previewUrl }, index) => <li className="group relative aspect-square overflow-hidden rounded-xl border bg-muted" key={`${file.name}-${file.lastModified}`}><Image alt={`Preview of ${file.name}`} className="object-cover" fill sizes="(max-width: 640px) 50vw, 280px" src={previewUrl} unoptimized /><div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-background/90 p-3 backdrop-blur-sm"><span className="min-w-0"><span className="block truncate text-xs font-medium">{file.name}</span><span className="text-xs text-muted-foreground">{formatBytes(file.size)}</span></span><Button aria-label={`Remove ${file.name}`} className="shrink-0" onClick={() => removeScreenshot(index)} size="icon-sm" type="button" variant="ghost"><Trash2 /></Button></div></li>)}</ul> : <p className="text-center text-sm text-muted-foreground">No screenshots attached yet. You can continue without one.</p>}
               </FieldGroup>
             ) : null}
 
