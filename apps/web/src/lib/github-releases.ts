@@ -41,8 +41,17 @@ export async function getDesktopReleases() {
   }
 }
 
-export function installerFor(release: DesktopRelease, platform: "macOS" | "Windows" | "Linux") {
-  const matcher = platform === "macOS" ? /\.dmg$/i : platform === "Windows" ? /-setup\.exe$/i : /\.AppImage$/;
+export type ReleasePlatform = "macOS" | "Windows" | "Linux" | "Android" | "iOS";
+
+export function installerFor(release: DesktopRelease, platform: ReleasePlatform) {
+  const matchers: Record<ReleasePlatform, RegExp> = {
+    macOS: /\.dmg$/i,
+    Windows: /-setup\.exe$/i,
+    Linux: /\.AppImage$/i,
+    Android: /\.apk$/i,
+    iOS: /\.ipa$/i,
+  };
+  const matcher = matchers[platform];
   return release.assets.find(asset => matcher.test(asset.name));
 }
 

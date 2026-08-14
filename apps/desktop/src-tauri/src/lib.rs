@@ -8,13 +8,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let workspace_url = if cfg!(debug_assertions) {
-                DEVELOPMENT_URL
-            } else {
-                option_env!("LITERA_APP_URL").expect(
+            let workspace_url = option_env!("LITERA_APP_URL").unwrap_or_else(|| {
+                if cfg!(debug_assertions) {
+                    DEVELOPMENT_URL
+                } else {
+                    panic!(
                     "LITERA_APP_URL must be set to the deployed HTTPS workspace when building a release",
-                )
-            };
+                    )
+                }
+            });
             let parsed_url = workspace_url.parse()?;
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed_url))
