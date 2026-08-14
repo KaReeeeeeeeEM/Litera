@@ -8,7 +8,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let workspace_url = option_env!("LITERA_APP_URL").unwrap_or_else(|| {
+            let workspace_origin = option_env!("LITERA_APP_URL").unwrap_or_else(|| {
                 if cfg!(debug_assertions) {
                     DEVELOPMENT_URL
                 } else {
@@ -17,7 +17,8 @@ pub fn run() {
                     )
                 }
             });
-            let parsed_url = workspace_url.parse()?;
+            let device_url = format!("{}/device", workspace_origin.trim_end_matches('/'));
+            let parsed_url = device_url.parse()?;
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed_url))
                 .title("Litera")

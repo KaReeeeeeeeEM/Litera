@@ -22,7 +22,7 @@ const fallback: DesktopRelease[] = [{
   name: "Litera Desktop 0.1.1",
   published_at: "2026-08-14T13:57:08Z",
   html_url: "https://github.com/KaReeeeeeeeEM/Litera/releases/tag/desktop-v0.1.1",
-  body: "- Introduces Litera Desktop for macOS, Windows, and Linux.\n- Adds signed application upgrades and a live release timeline.\n- Connects the desktop experience to the secure Litera workspace.",
+  body: "- Introduces Litera for desktop and mobile operating systems.\n- Adds signed application upgrades and a live release timeline.\n- Opens directly into a private book library stored on the device.",
   prerelease: false,
   assets: [],
 }];

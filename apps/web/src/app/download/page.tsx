@@ -27,7 +27,7 @@ export default async function DownloadPage() {
   return (
     <PageShell>
       <main>
-        <PageHero eyebrow="Litera applications" title="Your publishing workspace, ready across devices." description="Use Litera in a focused native application on desktop and mobile—with the same secure projects, reviews, and narration workflow wherever you sign in." icon={Download} />
+        <PageHero eyebrow="Litera applications" title="Your publishing workspace, ready across devices." description="Install Litera and begin immediately—no account or second sign-in. Your imported books remain in the application storage on that device." icon={Download} />
 
         <section className="mx-auto max-w-7xl px-5 py-20 lg:px-8 lg:py-24">
           <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -41,12 +41,12 @@ export default async function DownloadPage() {
 
         <section className="border-y bg-muted/30"><div className="mx-auto grid max-w-7xl gap-10 px-5 py-20 lg:grid-cols-3 lg:px-8 lg:py-24">{[
           [Laptop, "A focused workspace", "Keep complex production work in a dedicated window without losing the clarity of Litera’s interface."],
-          [ShieldCheck, "Secure by design", "A compact Rust-powered shell connects to the same protected Litera workspace and role controls."],
-          [Download, "Native installers", "Purpose-built packages for macOS, Windows, and Linux are produced from the same tested release."],
+          [ShieldCheck, "Private by default", "Imported books remain in Litera’s local application storage on the device where you added them."],
+          [Download, "Native installers", "Purpose-built desktop and mobile packages are produced from the same tested release."],
         ].map(([Icon, title, text]) => { const FeatureIcon = Icon as typeof Laptop; return <div key={title as string}><FeatureIcon className="size-7 text-primary"/><h3 className="mt-5 text-xl font-semibold">{title as string}</h3><p className="mt-3 leading-7 text-muted-foreground">{text as string}</p></div>; })}</div></section>
 
-        <FaqSection title="Desktop downloads, explained." items={[["Does the desktop app work offline?","Litera Desktop currently requires an internet connection because projects, accounts, review activity and publishing services are securely synchronized with the Litera workspace."],["Can I use the same account on different computers?","Yes. Sign in with your Litera account to access the workspace permitted by your role."],["Why is my download marked as an early-access build?","Desktop installers are published as signed, tested releases. Early access lets teams validate their operating environment before a wider rollout."],["How are updates delivered?","New installers are published as versioned releases. Managed automatic updates can be enabled after the signing and release channels are finalized."]]}/>
-        <ClosingCta title="Bring a calmer publishing workflow to your desktop." description="Start in the browser today or request access to the next Litera desktop release." />
+        <FaqSection title="Application downloads, explained." items={[["Do I need a Litera account?","No. The installed application opens directly into your device library without a sign-in screen."],["Where are my books stored?","Imported books remain in Litera’s application storage on the device where they were added. They are not synchronized to another computer or phone."],["Why is my download marked as an early-access build?","Installers are published as tested releases. Early access lets teams validate their operating environment before a wider rollout."],["How are updates delivered?","New installers are published as versioned releases. Managed automatic updates can be enabled after the signing and release channels are finalized."]]}/>
+        <ClosingCta title="Bring a calmer publishing workflow to your device." description="Choose the package for your operating system and begin with a private, local book library." href="#releases" label="Choose a download" />
       </main>
     </PageShell>
   );
