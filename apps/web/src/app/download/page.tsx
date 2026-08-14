@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { ArrowRight, Check, Download, Laptop, ShieldCheck } from "lucide-react";
 import { FaApple, FaLinux, FaWindows } from "react-icons/fa6";
 
@@ -10,6 +9,8 @@ import { PageShell } from "@/components/site/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getDesktopReleases, installerFor } from "@/lib/github-releases";
 
 export const metadata: Metadata = {
   title: "Download Litera — Desktop publishing workspace",
@@ -22,8 +23,11 @@ const platforms = [
   { name: "Linux", detail: "AppImage and Debian package", requirement: "Modern 64-bit distribution", icon: FaLinux },
 ];
 
-export default function DownloadPage() {
-  const releaseUrl = process.env.NEXT_PUBLIC_DESKTOP_RELEASE_URL;
+export const revalidate = 300;
+
+export default async function DownloadPage() {
+  const releases = await getDesktopReleases();
+  const latest = releases[0];
 
   return (
     <PageShell>
@@ -36,7 +40,9 @@ export default function DownloadPage() {
             <p className="max-w-md text-sm leading-6 text-muted-foreground">One Litera account keeps your work available across supported devices.</p>
           </div>
           <div className="grid gap-5 lg:grid-cols-3">
-            {platforms.map(({ detail, icon: Icon, name, requirement }) => (
+            {platforms.map(({ detail, icon: Icon, name, requirement }) => {
+              const installer = installerFor(latest, name as "macOS" | "Windows" | "Linux");
+              return (
               <Card className="motion-card gap-0 py-0" key={name}>
                 <CardHeader className="p-6 pb-4">
                   <div className="flex items-center gap-4">
@@ -44,11 +50,13 @@ export default function DownloadPage() {
                     <div><CardTitle className="text-xl">Litera for {name}</CardTitle><CardDescription className="mt-1">{detail}</CardDescription></div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p><Button asChild className="w-full" variant={releaseUrl ? "default" : "outline"}><Link href={releaseUrl || "/contact/email"}>{releaseUrl ? "View downloads" : "Request early access"}<ArrowRight /></Link></Button></CardContent>
+                <CardContent className="space-y-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p><Button asChild className="w-full"><a href={installer?.browser_download_url || latest.html_url}>Quick download<Download/><span className="sr-only"> Litera for {name}</span></a></Button></CardContent>
               </Card>
-            ))}
+            );})}
           </div>
         </section>
+
+        <section className="border-y bg-muted/30" id="releases"><div className="mx-auto max-w-7xl px-5 py-20 lg:px-8 lg:py-24"><div className="mb-10"><Badge variant="outline">All releases</Badge><h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Choose a version to download.</h2><p className="mt-4 max-w-2xl leading-7 text-muted-foreground">Use the latest release for normal installation, or select an earlier signed version when your environment requires it.</p></div><Card className="gap-0 py-0"><Table><TableHeader><TableRow><TableHead>Version</TableHead><TableHead>Released</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Installers</TableHead></TableRow></TableHeader><TableBody>{releases.map((release, index) => <TableRow key={release.id}><TableCell><div className="font-mono font-semibold">{release.tag_name.replace(/^desktop-/, "")}</div><div className="mt-1 text-xs text-muted-foreground">{release.name}</div></TableCell><TableCell>{new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(release.published_at))}</TableCell><TableCell>{index === 0 ? <Badge>Latest</Badge> : release.prerelease ? <Badge variant="secondary">Preview</Badge> : <Badge variant="outline">Stable</Badge>}</TableCell><TableCell><div className="flex flex-wrap justify-end gap-2">{(["macOS", "Windows", "Linux"] as const).map(platform => { const asset = installerFor(release, platform); return asset ? <Button asChild key={platform} size="sm"><a href={asset.browser_download_url}>{platform}<Download/></a></Button> : null; })}<Button asChild size="sm" variant="ghost"><a href={release.html_url} rel="noreferrer" target="_blank">Details<ArrowRight/></a></Button></div></TableCell></TableRow>)}</TableBody></Table></Card></div></section>
 
         <section className="border-y bg-muted/30"><div className="mx-auto grid max-w-7xl gap-10 px-5 py-20 lg:grid-cols-3 lg:px-8 lg:py-24">{[
           [Laptop, "A focused workspace", "Keep complex production work in a dedicated window without losing the clarity of Litera’s interface."],
