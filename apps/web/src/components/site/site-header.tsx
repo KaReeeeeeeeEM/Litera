@@ -46,6 +46,7 @@ export function SiteHeader() {
           })}
           <Separator className="mx-2 !h-5 !self-center" orientation="vertical" />
           <ThemeToggle />
+          <Button asChild size="sm"><Link href="/download">Download</Link></Button>
         </nav>
         <div className="flex items-center gap-1 lg:hidden">
           <ThemeToggle />
@@ -55,6 +56,8 @@ export function SiteHeader() {
               <SheetHeader className="border-b p-6 text-start"><SheetTitle>Litera</SheetTitle><SheetDescription>Create accessible digital learning experiences.</SheetDescription></SheetHeader>
               <nav aria-label="Mobile navigation" className="flex flex-col gap-2 p-4">
                 {links.map((link) => <Button asChild className="justify-start" key={link.href} variant="ghost"><Link href={link.href}><link.icon />{link.label}</Link></Button>)}
+                <Separator className="my-2" />
+                <Button asChild><Link href="/download"><Download data-icon="inline-start" />Download Litera</Link></Button>
               </nav>
             </SheetContent>
           </Sheet>
