@@ -18,10 +18,15 @@ export const metadata: Metadata = {
   alternates: { canonical: "/download" },
 };
 
-const platforms: Array<{ name: ReleasePlatform; detail: string; requirement: string; icon: typeof FaApple }> = [
+type PlatformOption = { name: ReleasePlatform; detail: string; requirement: string; icon: typeof FaApple };
+
+const desktopPlatforms: PlatformOption[] = [
   { name: "macOS", detail: "Apple Silicon and Intel", requirement: "macOS 11 or later", icon: FaApple },
   { name: "Windows", detail: "64-bit installer", requirement: "Windows 10 or later", icon: FaWindows },
   { name: "Linux", detail: "AppImage and Debian package", requirement: "Modern 64-bit distribution", icon: FaLinux },
+];
+
+const mobilePlatforms: PlatformOption[] = [
   { name: "Android", detail: "Installable APK", requirement: "Android 7.0 or later", icon: FaAndroid },
   { name: "iOS", detail: "Native iPhone and iPad package", requirement: "iOS 14 or later · signing pending", icon: FaApple },
 ];
@@ -42,20 +47,44 @@ export default async function DownloadPage() {
             <div><Badge variant="outline">Cross-platform</Badge><h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Choose your operating system.</h2></div>
             <p className="max-w-md text-sm leading-6 text-muted-foreground">One Litera account keeps your work available across supported devices.</p>
           </div>
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {platforms.map(({ detail, icon: Icon, name, requirement }) => {
+          <div className="flex flex-col gap-14">
+            <div>
+              <div className="mb-6"><Badge variant="secondary">Desktop</Badge><h3 className="mt-3 text-2xl font-semibold tracking-tight">Desktop applications</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Focused installers for laptops and workstations.</p></div>
+              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                {desktopPlatforms.map(({ detail, icon: Icon, name, requirement }) => {
+                  const installer = installerFor(latest, name);
+                  return (
+                  <Card className="motion-card h-full gap-0 py-0" key={name}>
+                    <CardHeader className="p-6 pb-4">
+                      <div className="flex items-center gap-4">
+                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10"><Icon aria-hidden="true" className="size-6 text-primary" /></div>
+                        <div><CardTitle className="text-xl">Litera for {name}</CardTitle><CardDescription className="mt-1">{detail}</CardDescription></div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="flex flex-1 flex-col gap-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p>{installer ? <Button asChild className="mt-auto w-full"><a href={installer.browser_download_url}>Quick download<Download data-icon="inline-end"/><span className="sr-only"> Litera for {name}</span></a></Button> : <Button className="mt-auto w-full" disabled>Package coming soon</Button>}</CardContent>
+                  </Card>
+                );})}
+              </div>
+            </div>
+
+            <div className="border-t pt-10">
+              <div className="mb-6"><Badge variant="secondary">Mobile</Badge><h3 className="mt-3 text-2xl font-semibold tracking-tight">Mobile applications</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Carry reviews, narration, and publishing activity onto phones and tablets.</p></div>
+              <div className="grid gap-5 md:grid-cols-2">
+                {mobilePlatforms.map(({ detail, icon: Icon, name, requirement }) => {
               const installer = installerFor(latest, name);
               return (
-              <Card className="motion-card gap-0 py-0" key={name}>
+              <Card className="motion-card h-full gap-0 py-0" key={name}>
                 <CardHeader className="p-6 pb-4">
                   <div className="flex items-center gap-4">
                     <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10"><Icon aria-hidden="true" className="size-6 text-primary" /></div>
                     <div><CardTitle className="text-xl">Litera for {name}</CardTitle><CardDescription className="mt-1">{detail}</CardDescription></div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p>{installer ? <Button asChild className="w-full"><a href={installer.browser_download_url}>Quick download<Download data-icon="inline-end"/><span className="sr-only"> Litera for {name}</span></a></Button> : <Button className="w-full" disabled>Package coming soon</Button>}</CardContent>
+                <CardContent className="flex flex-1 flex-col gap-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p>{installer ? <Button asChild className="mt-auto w-full"><a href={installer.browser_download_url}>Quick download<Download data-icon="inline-end"/><span className="sr-only"> Litera for {name}</span></a></Button> : <Button className="mt-auto w-full" disabled>Package coming soon</Button>}</CardContent>
               </Card>
             );})}
+              </div>
+            </div>
           </div>
         </section>
 
