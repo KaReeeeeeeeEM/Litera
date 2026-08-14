@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Bricolage_Grotesque, Dancing_Script, Geist_Mono } from "next/font/google";
 
 import { ThemeProvider } from "@/components/theme-provider";
+import { FeedbackFab } from "@/components/feedback/feedback-fab";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -89,6 +90,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData).replace(/</g, "\\u003c") }} />
         <ThemeProvider>
           <TooltipProvider>{children}</TooltipProvider>
+          <FeedbackFab />
           <Toaster position="top-right" richColors />
         </ThemeProvider>
       </body>
