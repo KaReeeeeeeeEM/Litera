@@ -2,6 +2,13 @@
 
 Litera follows semantic versioning for desktop releases. Published GitHub Releases are the source of truth for signed installers, update metadata, fixes, and upgrade notes.
 
+## 0.1.3 — Complete platform packaging
+
+- Replaced public sign-in actions with direct Litera downloads.
+- Added automatic universal Android packaging for ARM64, ARMv7, x86, and x64.
+- Added iOS simulator validation to every versioned release build.
+- Kept macOS, Windows, and Linux installers in the same coordinated release.
+
 ## 0.1.2 — Local-first device library
 
 - Removed authentication from the installed Litera application.
