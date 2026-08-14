@@ -165,7 +165,7 @@ export function FeedbackFab() {
       </Button>
 
       <Dialog open={open} onOpenChange={(nextOpen) => { setOpen(nextOpen); if (!nextOpen && !pending) setError(""); }}>
-        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-5xl">
           <DialogHeader className="pr-10">
             <div className="flex items-center justify-between gap-4 text-xs font-medium text-muted-foreground">
               <span>Feedback</span>
@@ -176,13 +176,13 @@ export function FeedbackFab() {
             <DialogDescription>{step === 0 ? "Your perspective helps us make Litera calmer, clearer, and more inclusive." : step === 1 ? "Share enough context for the team to understand and reproduce your experience." : step === 2 ? "Screenshots are optional, but they can help us see exactly what you saw." : "Check everything before your feedback is sent to the Litera team."}</DialogDescription>
           </DialogHeader>
 
-          <div className="min-h-72 py-2">
+          <div className="py-1">
             {step === 0 ? (
               <FieldSet>
                 <FieldLegend className="sr-only">Feedback category</FieldLegend>
                 <ToggleGroup className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2" onValueChange={(value) => { if (value) setDraft((current) => ({ ...current, category: value as Category })); setError(""); }} type="single" value={draft.category} variant="outline">
                   {categories.map(({ value, label, description, icon: Icon }) => (
-                    <ToggleGroupItem className="h-auto min-h-24 w-full items-start justify-start whitespace-normal p-4 text-left data-[state=on]:border-primary/40 data-[state=on]:bg-primary/5" key={value} value={value}>
+                    <ToggleGroupItem className="h-auto min-h-20 w-full items-start justify-start whitespace-normal p-4 text-left transition-colors hover:border-primary/30 data-[state=on]:border-primary/30 data-[state=on]:bg-primary/5" key={value} value={value}>
                       <Icon className="mt-0.5" />
                       <span className="flex flex-col gap-1"><strong>{label}</strong><span className="font-normal text-muted-foreground">{description}</span></span>
                     </ToggleGroupItem>
