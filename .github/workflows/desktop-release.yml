@@ -57,9 +57,9 @@ jobs:
             Litera Desktop __VERSION__ is a signed cross-platform release for accessible educational publishing.
 
             ## Upgrade
-            Existing Litera Desktop installations can open **Updates** and choose **Check for updates**. New installations can download the matching macOS, Windows, or Linux package from this release.
+            Existing Litera Desktop installations can open **Updates** and choose **Check for updates**. New installations can download the matching macOS, Windows, Linux, or universal Android package from this release.
 
-            See the release assets below for installers and `latest.json` for verified in-app updates.
+            See the release assets below for installers and `latest.json` for verified in-app updates. The iOS build is validated in the simulator; installation on physical Apple devices requires Apple Developer signing.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

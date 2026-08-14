@@ -1,6 +1,9 @@
-name: Mobile package
+name: Mobile release packages
 
 on:
+  push:
+    tags:
+      - "desktop-v*"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -13,6 +16,7 @@ permissions:
 
 env:
   LITERA_APP_URL: https://litera.almareem.com
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   android:
@@ -36,21 +40,37 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir apps/desktop tauri android init --ci
-      - run: pnpm --dir apps/desktop tauri android build --debug --apk --target aarch64 --ci
+      - name: Build universal Android APK
+        run: pnpm --dir apps/desktop tauri android build --debug --apk --ci
       - name: Prepare Android package
         run: |
-          apk=$(find apps/desktop/src-tauri/gen/android -type f -name '*.apk' | head -n 1)
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          apk=$(find apps/desktop/src-tauri/gen/android -type f -name '*universal*.apk' | head -n 1)
+          if [ -z "$apk" ]; then
+            apk=$(find apps/desktop/src-tauri/gen/android -type f -name '*.apk' | head -n 1)
+          fi
           test -n "$apk"
-          cp "$apk" Litera_0.1.2_android-aarch64.apk
+          cp "$apk" "Litera_${version}_android-universal.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: Litera-Android
-          path: Litera_0.1.2_android-aarch64.apk
+          path: Litera_*_android-universal.apk
+      - name: Wait for the matching desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 40); do
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Release $RELEASE_TAG was not created in time." >&2
+          exit 1
       - name: Attach APK to release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: gh release upload "$RELEASE_TAG" Litera_0.1.2_android-aarch64.apk --clobber
+        run: gh release upload "$RELEASE_TAG" Litera_*_android-universal.apk --clobber
 
   ios-simulator:
     name: iOS simulator validation
@@ -72,10 +92,11 @@ jobs:
       - run: pnpm --dir apps/desktop tauri ios build --debug --target aarch64-sim --no-sign
       - name: Package simulator application
         run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
           app=$(find apps/desktop/src-tauri/gen/apple -type d -name '*.app' | head -n 1)
           test -n "$app"
-          ditto -c -k --sequesterRsrc --keepParent "$app" Litera_0.1.2_ios-simulator.zip
+          ditto -c -k --sequesterRsrc --keepParent "$app" "Litera_${version}_ios-simulator.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: Litera-iOS-Simulator
-          path: Litera_0.1.2_ios-simulator.zip
+          path: Litera_*_ios-simulator.zip
