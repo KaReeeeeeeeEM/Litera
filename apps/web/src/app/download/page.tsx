@@ -1,35 +1,22 @@
 import type { Metadata } from "next";
-import { ArrowRight, Check, Download, Laptop, ShieldCheck } from "lucide-react";
-import { FaAndroid, FaApple, FaLinux, FaWindows } from "react-icons/fa6";
+import { ArrowRight, Download, Laptop, ShieldCheck } from "lucide-react";
 
+import { PlatformDownloadGroups } from "@/components/download/platform-download-groups";
 import { ClosingCta } from "@/components/site/closing-cta";
 import { FaqSection } from "@/components/site/faq-section";
 import { PageHero } from "@/components/site/page-hero";
 import { PageShell } from "@/components/site/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { getDesktopReleases, installerFor, type ReleasePlatform } from "@/lib/github-releases";
+import { getDesktopReleases, installerFor } from "@/lib/github-releases";
 
 export const metadata: Metadata = {
   title: "Download Litera for desktop",
   description: "Download Litera for desktop and mobile devices and keep your publishing workspace close at hand.",
   alternates: { canonical: "/download" },
 };
-
-type PlatformOption = { name: ReleasePlatform; detail: string; requirement: string; icon: typeof FaApple };
-
-const desktopPlatforms: PlatformOption[] = [
-  { name: "macOS", detail: "Apple Silicon and Intel", requirement: "macOS 11 or later", icon: FaApple },
-  { name: "Windows", detail: "64-bit installer", requirement: "Windows 10 or later", icon: FaWindows },
-  { name: "Linux", detail: "AppImage and Debian package", requirement: "Modern 64-bit distribution", icon: FaLinux },
-];
-
-const mobilePlatforms: PlatformOption[] = [
-  { name: "Android", detail: "Installable APK", requirement: "Android 7.0 or later", icon: FaAndroid },
-  { name: "iOS", detail: "Native iPhone and iPad package", requirement: "iOS 14 or later · signing pending", icon: FaApple },
-];
 
 export const revalidate = 300;
 
@@ -47,45 +34,7 @@ export default async function DownloadPage() {
             <div><Badge variant="outline">Cross-platform</Badge><h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Choose your operating system.</h2></div>
             <p className="max-w-md text-sm leading-6 text-muted-foreground">One Litera account keeps your work available across supported devices.</p>
           </div>
-          <div className="flex flex-col gap-14">
-            <div>
-              <div className="mb-6"><Badge variant="secondary">Desktop</Badge><h3 className="mt-3 text-2xl font-semibold tracking-tight">Desktop applications</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Focused installers for laptops and workstations.</p></div>
-              <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-                {desktopPlatforms.map(({ detail, icon: Icon, name, requirement }) => {
-                  const installer = installerFor(latest, name);
-                  return (
-                  <Card className="motion-card h-full gap-0 py-0" key={name}>
-                    <CardHeader className="p-6 pb-4">
-                      <div className="flex items-center gap-4">
-                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10"><Icon aria-hidden="true" className="size-6 text-primary" /></div>
-                        <div><CardTitle className="text-xl">Litera for {name}</CardTitle><CardDescription className="mt-1">{detail}</CardDescription></div>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="flex flex-1 flex-col gap-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p>{installer ? <Button asChild className="mt-auto w-full"><a href={installer.browser_download_url}>Quick download<Download data-icon="inline-end"/><span className="sr-only"> Litera for {name}</span></a></Button> : <Button className="mt-auto w-full" disabled>Package coming soon</Button>}</CardContent>
-                  </Card>
-                );})}
-              </div>
-            </div>
-
-            <div className="border-t pt-10">
-              <div className="mb-6"><Badge variant="secondary">Mobile</Badge><h3 className="mt-3 text-2xl font-semibold tracking-tight">Mobile applications</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Carry reviews, narration, and publishing activity onto phones and tablets.</p></div>
-              <div className="grid gap-5 md:grid-cols-2">
-                {mobilePlatforms.map(({ detail, icon: Icon, name, requirement }) => {
-              const installer = installerFor(latest, name);
-              return (
-              <Card className="motion-card h-full gap-0 py-0" key={name}>
-                <CardHeader className="p-6 pb-4">
-                  <div className="flex items-center gap-4">
-                    <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10"><Icon aria-hidden="true" className="size-6 text-primary" /></div>
-                    <div><CardTitle className="text-xl">Litera for {name}</CardTitle><CardDescription className="mt-1">{detail}</CardDescription></div>
-                  </div>
-                </CardHeader>
-                <CardContent className="flex flex-1 flex-col gap-4 px-6 pb-6"><p className="flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4 text-primary" />{requirement}</p>{installer ? <Button asChild className="mt-auto w-full"><a href={installer.browser_download_url}>Quick download<Download data-icon="inline-end"/><span className="sr-only"> Litera for {name}</span></a></Button> : <Button className="mt-auto w-full" disabled>Package coming soon</Button>}</CardContent>
-              </Card>
-            );})}
-              </div>
-            </div>
-          </div>
+          <PlatformDownloadGroups release={latest} />
         </section>
 
         <section className="border-y bg-muted/30" id="releases"><div className="mx-auto max-w-7xl px-5 py-20 lg:px-8 lg:py-24"><div className="mb-10"><Badge variant="outline">All releases</Badge><h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">Choose a version to download.</h2><p className="mt-4 max-w-2xl leading-7 text-muted-foreground">Use the latest release for normal installation, or select an earlier signed version when your environment requires it.</p></div><Card className="gap-0 py-0"><Table className="min-w-[56rem]"><TableHeader><TableRow><TableHead>Version</TableHead><TableHead>Released</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Installers</TableHead></TableRow></TableHeader><TableBody>{releases.map((release, index) => <TableRow key={release.id}><TableCell><div className="font-mono font-semibold">{release.tag_name.replace(/^desktop-/, "")}</div><div className="mt-1 text-xs text-muted-foreground">{release.name}</div></TableCell><TableCell>{new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(release.published_at))}</TableCell><TableCell>{index === 0 ? <Badge>Latest</Badge> : release.prerelease ? <Badge variant="secondary">Preview</Badge> : <Badge variant="outline">Stable</Badge>}</TableCell><TableCell><div className="flex flex-nowrap justify-end gap-2">{(["macOS", "Windows", "Linux", "Android", "iOS"] as const).map(platform => { const asset = installerFor(release, platform); return asset ? <Button asChild className="shrink-0" key={platform} size="sm"><a href={asset.browser_download_url}>{platform}<Download data-icon="inline-end"/></a></Button> : null; })}<Button asChild className="shrink-0" size="sm" variant="ghost"><a href={release.html_url} rel="noreferrer" target="_blank">Details<ArrowRight data-icon="inline-end"/></a></Button></div></TableCell></TableRow>)}</TableBody></Table></Card><p className="mt-3 text-xs text-muted-foreground sm:hidden">Swipe sideways to see every installer for a release.</p></div></section>
