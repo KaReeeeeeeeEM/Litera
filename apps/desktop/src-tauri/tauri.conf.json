@@ -17,6 +17,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Education",
     "copyright": "Copyright © 2026 Litera",
     "shortDescription": "Accessible educational publishing workspace",
@@ -42,6 +43,13 @@
       "appimage": {
         "bundleMediaFramework": false
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRFNzdFNjNCRUIyQjZFN0QKUldSOWJpdnJPK1ozVGlSWTZVaFU2NnpQcTBJU0s1YW9naVEyTHlPQURlUWZjV3F0cDR1d25sM3AK",
+      "endpoints": ["https://github.com/KaReeeeeeeeEM/Litera/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
     }
   }
 }

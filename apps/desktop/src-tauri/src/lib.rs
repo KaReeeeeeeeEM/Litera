@@ -5,6 +5,8 @@ const DEVELOPMENT_URL: &str = "http://localhost:3000";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let workspace_url = if cfg!(debug_assertions) {
                 DEVELOPMENT_URL

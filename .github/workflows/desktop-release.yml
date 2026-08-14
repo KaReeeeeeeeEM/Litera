@@ -16,9 +16,7 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
-          - platform: macos-latest
-            args: --target x86_64-apple-darwin
+            args: --target universal-apple-darwin
           - platform: ubuntu-22.04
             args: ""
           - platform: windows-latest
@@ -35,7 +33,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ contains(matrix.args, 'aarch64-apple-darwin') && 'aarch64-apple-darwin' || contains(matrix.args, 'x86_64-apple-darwin') && 'x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
@@ -49,11 +47,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LITERA_APP_URL: ${{ vars.LITERA_APP_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           tagName: desktop-v__VERSION__
           releaseName: Litera Desktop v__VERSION__
-          releaseBody: Cross-platform Litera desktop installers.
-          releaseDraft: true
+          releaseBody: |
+            Litera Desktop __VERSION__ is a signed cross-platform release for accessible educational publishing.
+
+            ## Upgrade
+            Existing Litera Desktop installations can open **Updates** and choose **Check for updates**. New installations can download the matching macOS, Windows, or Linux package from this release.
+
+            See the release assets below for installers and `latest.json` for verified in-app updates.
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

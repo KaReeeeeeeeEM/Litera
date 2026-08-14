@@ -5,7 +5,7 @@ import { BrandMark } from "@/components/brand-mark";
 const groups = [
   { title: "Platform", links: [["Features","/features"],["Accessibility","/accessibility"],["Download","/download"],["Workspace","/studio"],["Sign in","/login"]] },
   { title: "Company", links: [["About Litera","/about"],["Contact","/contact"],["Our approach","/about#approach"]] },
-  { title: "Resources", links: [["Publishing workflow","/features#workflow"],["Swahili narration","/features#narration"],["Inclusive output","/accessibility#standards"]] },
+  { title: "Resources", links: [["Product updates","/updates"],["Publishing workflow","/features#workflow"],["Swahili narration","/features#narration"],["Inclusive output","/accessibility#standards"]] },
 ] as const;
 
 export function SiteFooter() {

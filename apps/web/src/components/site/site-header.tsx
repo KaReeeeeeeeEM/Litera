@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Download, Info, Layers3, Menu, ShieldCheck } from "lucide-react";
+import { BookOpen, Download, Info, Layers3, Menu, RefreshCw, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -15,6 +15,7 @@ const links = [
   { href: "/accessibility", label: "Accessibility", icon: ShieldCheck },
   { href: "/about", label: "About", icon: Info },
   { href: "/download", label: "Download", icon: Download },
+  { href: "/updates", label: "Updates", icon: RefreshCw },
   { href: "/contact", label: "Contact", icon: BookOpen },
 ];
 

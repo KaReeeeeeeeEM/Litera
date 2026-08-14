@@ -21,6 +21,24 @@ pnpm desktop:dev
 
 Production installers are built natively by `.github/workflows/desktop-release.yml`. See `docs/desktop-distribution.md` for the required production URL, release tags, signing, and artifact locations.
 
+## Releases and updates
+
+Published GitHub Releases are Litera’s source of truth for desktop installers, release notes, fixes, and upgrade guidance. The public `/updates` page refreshes release data from GitHub every five minutes, while installed desktop clients use the signed `latest.json` asset to discover upgrades.
+
+To publish a desktop release after merging the release changes:
+
+1. Update the matching version in `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/Cargo.toml`, and `apps/desktop/package.json`.
+2. Add user-facing changes and upgrade notes to `CHANGELOG.md`.
+3. Run the full verification commands below and push `main`.
+4. Tag that exact commit and push the tag:
+
+```bash
+git tag desktop-v0.2.0
+git push origin desktop-v0.2.0
+```
+
+The desktop workflow builds signed macOS, Windows, and Linux packages, publishes the GitHub Release, and uploads updater metadata. Existing desktop users can then install the verified upgrade from Litera’s **Updates** page.
+
 Copy `apps/web/.env.example` to `apps/web/.env.local`, configure PostgreSQL and the authentication email webhook, then apply migrations with `pnpm --dir apps/web db:migrate`.
 
 New accounts always start with the `member` role. After the first trusted operator has verified their email, bootstrap that account once in PostgreSQL:
