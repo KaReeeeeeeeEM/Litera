@@ -3,7 +3,7 @@ import { ArrowUpRight, Mail, MapPin } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 
 const groups = [
-  { title: "Platform", links: [["Features","/features"],["Accessibility","/accessibility"],["Download","/download"],["Workspace","/studio"],["Sign in","/login"]] },
+  { title: "Platform", links: [["Features","/features"],["Accessibility","/accessibility"],["Download","/download"],["Product updates","/updates"]] },
   { title: "Company", links: [["About Litera","/about"],["Contact","/contact"],["Our approach","/about#approach"]] },
   { title: "Resources", links: [["Product updates","/updates"],["Publishing workflow","/features#workflow"],["Swahili narration","/features#narration"],["Inclusive output","/accessibility#standards"]] },
 ] as const;
