@@ -9,6 +9,12 @@
     "desktop:dev": "pnpm --dir apps/desktop tauri dev",
     "desktop:build": "pnpm --dir apps/desktop tauri build",
     "desktop:check": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "mobile:android:init": "pnpm --dir apps/desktop tauri android init",
+    "mobile:android:dev": "pnpm --dir apps/desktop tauri android dev",
+    "mobile:android:build": "pnpm --dir apps/desktop tauri android build --apk --aab",
+    "mobile:ios:init": "pnpm --dir apps/desktop tauri ios init",
+    "mobile:ios:dev": "pnpm --dir apps/desktop tauri ios dev",
+    "mobile:ios:build": "pnpm --dir apps/desktop tauri ios build",
     "lint": "pnpm --dir apps/web lint",
     "check:standards": "devcanon check ."
   }
