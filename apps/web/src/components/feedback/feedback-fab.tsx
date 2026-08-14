@@ -213,8 +213,8 @@ export function FeedbackFab() {
             {step === 2 ? (
               <FieldGroup>
                 <Field>
-                  <FieldLabel className="w-full cursor-pointer rounded-xl border border-dashed p-6 transition-colors hover:border-primary/30 hover:bg-primary/5" htmlFor="feedback-screenshots">
-                    <span className="flex flex-col items-center gap-3 text-center"><ImagePlus className="size-7 text-primary" /><span className="font-semibold">Attach screenshots or captures</span><span className="font-normal text-muted-foreground">PNG, JPG, or WebP · up to 3 images · 4 MB combined</span></span>
+                  <FieldLabel className="w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-colors hover:border-primary/30 hover:bg-primary/5" htmlFor="feedback-screenshots">
+                    <span className="flex w-full flex-col items-center justify-center gap-3 text-center"><ImagePlus className="size-7 text-primary" /><span className="font-semibold">Attach screenshots or captures</span><span className="font-normal text-muted-foreground">PNG, JPG, or WebP · up to 3 images · 4 MB combined</span></span>
                   </FieldLabel>
                   <Input accept="image/png,image/jpeg,image/webp" className="sr-only" id="feedback-screenshots" multiple onChange={addScreenshots} type="file" />
                 </Field>
