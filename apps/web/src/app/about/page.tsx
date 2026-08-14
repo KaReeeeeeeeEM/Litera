@@ -8,8 +8,9 @@ import { VectorScene } from "@/components/site/vector-scene";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const metadata: Metadata = {
-  title: "About — Litera",
+  title: "About",
   description: "Why Litera exists and who it serves.",
+  alternates: { canonical: "/about" },
 };
 
 const audiences = [

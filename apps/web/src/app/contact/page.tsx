@@ -9,7 +9,7 @@ import { VectorScene } from "@/components/site/vector-scene";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export const metadata: Metadata = { title: "Contact — Litera", description: "Talk with the Litera team." };
+export const metadata: Metadata = { title: "Contact", description: "Talk with the Litera team about accessible publishing, Swahili narration, and your learning workflow.", alternates: { canonical: "/contact" } };
 export default function ContactPage() {
   return <PageShell><main>
     <PageHero eyebrow="Contact" title="Let’s make learning easier to reach." description="Tell us about the books, learners and publishing workflow your team needs to support." icon={MessageCircle}/>

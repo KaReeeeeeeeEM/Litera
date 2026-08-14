@@ -8,7 +8,7 @@ import { VectorScene } from "@/components/site/vector-scene";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export const metadata: Metadata={title:"Features — Litera",description:"Explore Litera's accessible publishing workflow."};
+export const metadata: Metadata={title:"Features",description:"Explore Litera's visual storyboarding, accessible publishing workflow, and Swahili-first narration.",alternates:{canonical:"/features"}};
 const features=[[Blocks,"Block-based storyboard","Edit meaningful content units without losing semantic structure."],[Layers3,"Source fidelity","Keep every generated section connected to its source pages."],[Volume2,"Entity-level speech","Review and regenerate one narratable item without repeating the whole book."],[Languages,"Swahili-first review","Store pronunciation decisions separately from visible source text."],[Gauge,"Live quality checks","See coverage, narration, accessibility and responsive readiness together."],[RotateCcw,"Reversible editing","Preserve versions and restore earlier page states safely."],[FileCheck2,"Validated release","Block publication when required evidence or assets are missing."],[WifiOff,"Offline output","Produce complete packages for low-connectivity learning environments."]] as const;
 export default function FeaturesPage(){return <PageShell><main>
   <PageHero eyebrow="Product capabilities" title="Powerful where it matters. Calm everywhere else." description="Litera brings the difficult parts of inclusive publishing into a focused workflow with clear progress and safe recovery." icon={Layers3}/>

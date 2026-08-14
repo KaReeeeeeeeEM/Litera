@@ -7,7 +7,7 @@ import { PageShell } from "@/components/site/page-shell";
 import { VectorScene } from "@/components/site/vector-scene";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export const metadata: Metadata = { title: "Accessibility — Litera", description: "How Litera supports inclusive authoring and output." };
+export const metadata: Metadata = { title: "Accessibility", description: "How Litera supports inclusive authoring and accessible learning output.", alternates: { canonical: "/accessibility" } };
 const commitments = [[Keyboard,"Keyboard complete","Every authoring action has a non-pointer route."],[ScanText,"Semantic by default","Headings, landmarks and reading order stay explicit."],[AudioLines,"Meaningful narration","Descriptions and spoken text remain reviewable in context."],[Smartphone,"Reflow that works","Content remains usable on phones, tablets and large displays."],[Waypoints,"Visible quality gates","Missing alternatives and broken associations block release."]] as const;
 
 export default function AccessibilityPage() { return <PageShell><main>

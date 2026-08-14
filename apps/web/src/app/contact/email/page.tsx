@@ -7,8 +7,9 @@ import { PageShell } from "@/components/site/page-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const metadata: Metadata = {
-  title: "Email the Litera team — Litera",
+  title: "Email the Litera team",
   description: "Send a message to the Litera team about your publishing workflow.",
+  alternates: { canonical: "/contact/email" },
 };
 
 export default function ContactEmailPage() {

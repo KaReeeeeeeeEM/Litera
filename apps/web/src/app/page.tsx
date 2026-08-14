@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 
-export const metadata: Metadata = { title: "Litera — Inclusive publishing, made clear", description: "Create responsive, accessible and Swahili-first digital learning publications." };
+export const metadata: Metadata = { title: { absolute: "Litera — Inclusive publishing, made clear" }, description: "Create responsive, accessible and Swahili-first digital learning publications.", alternates: { canonical: "/" } };
 
 const capabilities = [
   { icon: LayoutTemplate, title: "Shape every page visually", text: "Compose meaningful blocks while Litera protects structure, reading order and responsive behaviour.", className: "md:col-span-2 lg:col-span-1 lg:row-span-2" },

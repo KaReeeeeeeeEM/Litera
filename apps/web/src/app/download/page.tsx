@@ -13,8 +13,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { getDesktopReleases, installerFor } from "@/lib/github-releases";
 
 export const metadata: Metadata = {
-  title: "Download Litera — Desktop publishing workspace",
+  title: "Download Litera for desktop",
   description: "Download Litera for macOS, Windows, or Linux and keep your publishing workspace close at hand.",
+  alternates: { canonical: "/download" },
 };
 
 const platforms = [

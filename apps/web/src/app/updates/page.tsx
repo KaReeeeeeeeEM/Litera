@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getDesktopReleases, releaseNotes } from "@/lib/github-releases";
 
-export const metadata: Metadata = { title: "Updates — Litera", description: "Follow Litera releases, improvements, fixes, and desktop upgrade guidance." };
+export const metadata: Metadata = { title: "Product updates", description: "Follow Litera releases, improvements, fixes, and desktop upgrade guidance.", alternates: { canonical: "/updates" } };
 export const revalidate = 300;
 
 export default async function UpdatesPage() {
