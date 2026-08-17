@@ -93,6 +93,7 @@ import {
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -253,7 +254,7 @@ export function DeviceLibrary() {
     try {
       for (const file of supported) {
         setValidatingName(file.name);
-        const notice = toast.loading(`Checking ${file.name}…`);
+        const notice = toast.loading(`Source validation · ${file.name}`);
         let sourceFormat: DeviceBook["sourceFormat"];
         try {
           sourceFormat = await validateSourceFile(file);
@@ -816,12 +817,16 @@ export function DeviceLibrary() {
               <Empty className="min-h-[calc(100vh-4rem)] rounded-none border-0 bg-background">
                 <div
                   className={cn(
-                    "flex min-h-96 w-full max-w-4xl cursor-pointer flex-col items-center justify-center gap-4 rounded-3xl border border-dashed p-8 transition-colors",
+                    "flex min-h-96 w-full max-w-4xl flex-col items-center justify-center gap-4 rounded-3xl border border-dashed p-8 transition-colors",
+                    validatingName ? "cursor-wait" : "cursor-pointer",
                     dragging
                       ? "border-primary/50 bg-primary/5"
                       : "bg-muted/10 hover:border-primary/30 hover:bg-primary/[.02]",
                   )}
-                  onClick={() => inputRef.current?.click()}
+                  aria-live={validatingName ? "polite" : undefined}
+                  onClick={() => {
+                    if (!validatingName) inputRef.current?.click();
+                  }}
                   onDragEnter={(event) => {
                     event.preventDefault();
                     setDragging(true);
@@ -836,26 +841,33 @@ export function DeviceLibrary() {
                   }}
                   onDrop={dropBooks}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ")
+                    if (
+                      !validatingName &&
+                      (event.key === "Enter" || event.key === " ")
+                    )
                       inputRef.current?.click();
                   }}
-                  role="button"
-                  tabIndex={0}
+                  role={validatingName ? "status" : "button"}
+                  tabIndex={validatingName ? -1 : 0}
                 >
                   <EmptyHeader>
                     <EmptyMedia variant="icon">
-                      <BookOpen />
+                      {validatingName ? (
+                        <Spinner aria-label="Validating source" className="size-7" />
+                      ) : (
+                        <BookOpen />
+                      )}
                     </EmptyMedia>
                     <EmptyTitle>
                       {validatingName
-                        ? `Checking ${validatingName}…`
+                        ? validatingName
                         : dragging
                           ? "Drop the book to begin"
                           : "Begin with a source book"}
                     </EmptyTitle>
                     <EmptyDescription>
                       {validatingName
-                        ? "Litera is checking the source signature and package structure before conversion."
+                        ? "Source signature and package structure validation before conversion."
                         : "Drag and drop a PDF, EPUB, Web Publication, or compatible project package in this upload area. Litera keeps it in this application’s local storage."}
                     </EmptyDescription>
                   </EmptyHeader>
@@ -867,8 +879,12 @@ export function DeviceLibrary() {
                         inputRef.current?.click();
                       }}
                     >
-                      <FileUp data-icon="inline-start" />
-                      {validatingName ? "Validating source…" : "Choose a book"}
+                      {validatingName ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <FileUp data-icon="inline-start" />
+                      )}
+                      {validatingName ? "Source validation" : "Choose a book"}
                     </Button>
                     <p className="text-xs text-muted-foreground">
                       or drop the file inside this dashed area
