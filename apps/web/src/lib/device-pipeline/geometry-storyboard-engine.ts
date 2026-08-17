@@ -223,7 +223,7 @@ export function createGeometryStoryboardHtml(
       const renderedWidth = activityHeading
         ? Math.min(
             width - block.bbox.x - width * 0.055,
-            Math.max(block.bbox.w, width * 0.72),
+            Math.max(block.bbox.w, width * 0.18),
           )
         : exampleHeading
           ? Math.min(width - block.bbox.x, Math.max(block.bbox.w, width * 0.23))
@@ -281,7 +281,7 @@ export function createGeometryStoryboardHtml(
           block.bbox.y + block.bbox.h / 2 <= bounds.y + bounds.h,
       );
       const headingSurface = activityHeading
-        ? `;padding:.14em .48em;border-radius:.35em;background:linear-gradient(180deg,color-mix(in srgb,${safeColor(decoration.accent)} 18%,#ffe4ca),color-mix(in srgb,${safeColor(decoration.accent)} 28%,#ffd3ad));box-shadow:0 .12em .25em #0002`
+        ? `;padding:.14em .56em;border-radius:.8em;background:${safeColor(decoration.accent)};color:#fff;box-shadow:none`
         : "";
       const hiddenSemanticStyle = insideComposedExample
         ? "position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;"
@@ -297,7 +297,12 @@ export function createGeometryStoryboardHtml(
     .join("");
   const text = positionedText + fractionMath;
   const examplePanelBounds = buildExamplePanels(rawTextBlocks, width, height);
-  const activityPanelBounds = buildActivityPanels(rawTextBlocks, width, height);
+  const activityPanelBounds = buildActivityPanels(
+    rawTextBlocks,
+    width,
+    height,
+    visibleAssets,
+  );
   const inferredPanels = [...examplePanelBounds, ...activityPanelBounds];
   const sourceRules = (page.layoutBlocks ?? [])
     .filter((block) => {
@@ -347,7 +352,7 @@ export function createGeometryStoryboardHtml(
   const activityPanels = activityPanelBounds
     .map(
       (panel, index) =>
-        `<span class="activity-panel" data-activity-panel="${index}" aria-hidden="true" style="left:${percent(panel.x, width)}%;top:${percent(panel.y, height)}%;width:${boundedPercent(panel.x, panel.w, width)}%;height:${boundedPercent(panel.y, panel.h, height)}%;border:0;background:color-mix(in srgb,${safeColor(decoration.accent)} 5%,#f4f0df)"></span>`,
+        `<span class="activity-panel" data-activity-panel="${index}" aria-hidden="true" style="left:${percent(panel.x, width)}%;top:${percent(panel.y, height)}%;width:${boundedPercent(panel.x, panel.w, width)}%;height:${boundedPercent(panel.y, panel.h, height)}%;border:.12cqw solid ${safeColor(decoration.accent)};border-radius:1.8cqw;background:color-mix(in srgb,${safeColor(decoration.accent)} 1.5%,#fff)"></span>`,
     )
     .join("");
   const activityGridCells = buildActivityGridCells(
@@ -1018,6 +1023,7 @@ function buildActivityPanels(
   blocks: ExtractedLayoutBlock[],
   pageWidth: number,
   pageHeight: number,
+  assets: ExtractedPageAsset[] = [],
 ) {
   const ordered = [...blocks].sort(
     (a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x,
@@ -1037,10 +1043,7 @@ function buildActivityPanels(
       (block) =>
         block.bbox.y >= heading.bbox.y && (!next || block.bbox.y < next.bbox.y),
     );
-    const left = Math.max(
-      pageWidth * 0.06,
-      Math.min(...section.map((block) => block.bbox.x)) - pageWidth * 0.012,
-    );
+    const left = Math.max(pageWidth * 0.06, heading.bbox.x - pageWidth * 0.004);
     const measuredRight = Math.min(
       pageWidth * 0.94,
       Math.max(...section.map((block) => block.bbox.x + block.bbox.w)) +
@@ -1049,7 +1052,23 @@ function buildActivityPanels(
     const usesRightColumn = section.some(
       (block) => block.bbox.x + block.bbox.w / 2 > pageWidth * 0.58,
     );
-    const right = usesRightColumn
+    const compactAssets = assets.filter(({ bounds }) =>
+      bounds.y >= heading.bbox.y &&
+      (!next || bounds.y < next.bbox.y) &&
+      bounds.w / pageWidth >= 0.08 &&
+      bounds.w / pageWidth <= 0.28 &&
+      bounds.h / pageHeight >= 0.025 &&
+      bounds.h / pageHeight <= 0.09,
+    );
+    const repeatedAnswerColumn = compactAssets.some((asset) =>
+      compactAssets.filter((candidate) =>
+        Math.abs(candidate.bounds.x - asset.bounds.x) <= pageWidth * 0.025 &&
+        Math.abs(candidate.bounds.w - asset.bounds.w) <= pageWidth * 0.025,
+      ).length >= 3,
+    );
+    const right = repeatedAnswerColumn
+      ? Math.max(measuredRight, pageWidth * 0.94)
+      : usesRightColumn
       ? Math.max(measuredRight, pageWidth * 0.88)
       : measuredRight;
     const bottom = Math.min(

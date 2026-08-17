@@ -5914,8 +5914,27 @@ async function samplePageDecoration(source: Blob) {
         ];
         clusters.set(key, cluster);
       }
+    const accentScore = (cluster: {
+      count: number;
+      total: [number, number, number];
+    }) => {
+      const average = cluster.total.map(
+        (value) => value / Math.max(1, cluster.count),
+      );
+      const chroma = Math.max(...average) - Math.min(...average);
+      const luminance = average.reduce((sum, value) => sum + value, 0) / 3;
+      // Pale page washes cover more pixels than a heading pill or border, but
+      // they are not the page's accent. Weight saturation and distance from
+      // white strongly enough for the smaller, intentional source colour to
+      // win without hard-coding a particular textbook palette.
+      return (
+        cluster.count *
+        Math.pow(Math.max(1, chroma), 2) *
+        Math.max(0.35, (255 - luminance) / 90)
+      );
+    };
     const dominant = [...clusters.values()].sort(
-      (a, b) => b.count - a.count,
+      (a, b) => accentScore(b) - accentScore(a),
     )[0];
     const accent = dominant
       ? rgbHex(

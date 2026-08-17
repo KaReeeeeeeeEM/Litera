@@ -541,6 +541,16 @@ assert.equal(
 );
 assert.match(printedAnswerBoxes, /data-correct-answer="2"/);
 assert.match(printedAnswerBoxes, /data-correct-answer="8"/);
+assert.match(
+  printedAnswerBoxes,
+  /class="activity-heading"[^>]*width:(?:1[89]|2\d)\.\d+%[^>]*background:#176b3a;color:#fff/,
+  "a short exercise label must remain a compact source-coloured pill rather than stretching across the page",
+);
+assert.match(
+  printedAnswerBoxes,
+  /class="activity-panel"[^>]*width:.*border:\.12cqw solid #176b3a;border-radius:1\.8cqw;background:color-mix\(in srgb,#176b3a 1\.5%,#fff\)/,
+  "the reconstructed exercise frame must use a white surface with the detected accent border",
+);
 
 const workedExampleHtml = createGeometryStoryboardHtml(
   {
