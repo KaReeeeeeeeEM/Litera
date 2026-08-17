@@ -1,4 +1,5 @@
 import type { ProviderKeys, ProviderId } from "@/components/device/provider-vault";
+import type { ReadingLevel } from "@/components/device/device-types";
 import { parseProviderJson, readProviderResponseJson } from "@/lib/device-pipeline/provider-json";
 
 export type AiStoryboardResult = { html: string; model: string; provider: ProviderId; fingerprint: string };
@@ -100,6 +101,7 @@ export async function captionImagesWithAi({
   assets,
   pageText,
   language,
+  readingLevel = "middle",
   keys,
   provider,
   signal,
@@ -108,6 +110,7 @@ export async function captionImagesWithAi({
   assets: AiStoryboardAsset[];
   pageText?: string;
   language: string;
+  readingLevel?: ReadingLevel;
   keys: ProviderKeys;
   provider: ProviderId;
   signal?: AbortSignal;
@@ -120,7 +123,14 @@ export async function captionImagesWithAi({
       dataUrl: await blobDataUrl(asset.blob),
     })),
   );
+  const levelGuidance: Record<ReadingLevel, string> = {
+    early: "Use one short sentence with familiar, concrete words for an early primary reader. Keep it under 18 words when possible.",
+    middle: "Use one or two clear descriptive sentences for a developing primary or middle-grade reader.",
+    late: "Use detailed, precise vocabulary for a confident late-stage reader, explaining important technical relationships.",
+  };
   const request = `Describe each supplied textbook visual for a blind learner who will hear the caption through text-to-speech. Write every caption in the book's source language (${language}). Do not translate it into English unless ${language} is English.
+
+Audience level: ${readingLevel}. ${levelGuidance[readingLevel]}
 
 Use the full page only as context. For every asset ID, state what is visibly depicted and any educationally important spatial relationship, labels, sequence, quantities, or action. Be concise but specific. Do not say only “image”, “illustration”, “figure”, “diagram”, “shown”, “accompanying”, or repeat a nearby question. Do not guess identity, emotion, colour, or meaning that is not visible. Return only valid JSON in this shape: {"captions":[{"imageId":"exact asset id","caption":"specific description"}]}.
 

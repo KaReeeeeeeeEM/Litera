@@ -27,6 +27,7 @@ export type StageSlug =
   | "validate"
   | "export"
   | "publish";
+export type ReadingLevel = "early" | "middle" | "late";
 export type ConversionConfig = {
   preset: "textbook" | "storybook" | "reference" | "custom";
   editingLanguage: string;
@@ -321,6 +322,8 @@ export type DeviceBook = {
   storyboardCss?: string;
   sourceTextCatalog?: TextCatalogEntry[];
   easyReadCatalog?: TextCatalogEntry[];
+  /** Shared audience level for Easy Read text and generated visual captions. */
+  readingLevel?: ReadingLevel;
   languageCatalogs?: Record<string, LanguageCatalog>;
   speechEntries?: SpeechEntry[];
   /** Per-book override. When absent, Speech uses the default voice from Settings. */

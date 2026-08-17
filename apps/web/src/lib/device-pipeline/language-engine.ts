@@ -1,4 +1,4 @@
-import type { DeviceBook, TextCatalogEntry } from "@/components/device/device-types";
+import type { DeviceBook, ReadingLevel, TextCatalogEntry } from "@/components/device/device-types";
 import type { ProviderId, ProviderKeys } from "@/components/device/provider-vault";
 import { parseProviderJson } from "@/lib/device-pipeline/provider-json";
 
@@ -41,6 +41,29 @@ export async function translateCatalog({ entries, sourceLanguage, targetLanguage
     const translated = batch.map((entry, index) => ({ ...entry, text: translations[index]!.trim() }));
     output.push(...translated);
     await onBatch?.(output);
+  }
+  return output;
+}
+
+export async function adaptCatalogForReadingLevel({ entries, language, level, keys, provider, signal }: { entries: TextCatalogEntry[]; language: string; level: ReadingLevel; keys: ProviderKeys; provider: ProviderId; signal?: AbortSignal }): Promise<TextCatalogEntry[]> {
+  const guidance: Record<ReadingLevel, string> = {
+    early: "Use short sentences and familiar concrete words for an early primary reader. Explain unavoidable terms simply. Prefer one idea per sentence.",
+    middle: "Use clear sentences and everyday vocabulary for a developing primary or middle-grade reader. Explain difficult terms without removing important facts.",
+    late: "Use concise, plain language for a confident late-stage reader. Preserve necessary subject vocabulary and explain technical relationships clearly.",
+  };
+  const output: TextCatalogEntry[] = [];
+  for (let offset = 0; offset < entries.length; offset += BATCH_SIZE) {
+    signal?.throwIfAborted();
+    const batch = entries.slice(offset, offset + BATCH_SIZE);
+    const request = `Rewrite each textbook catalog entry as an Easy Read alternative in the same language (${language}). ${guidance[level]} Preserve meaning, names, numbers, mathematical expressions, answer choices, and factual details. Captions describing images must remain useful to a blind reader. Return exactly one rewritten text for every input in the same order.\n\nEntries:\n${JSON.stringify(batch.map((entry, index) => ({ index, text: entry.text })))}`;
+    const texts = await requestTranslations(provider, keys, request, signal);
+    if (texts.length !== batch.length)
+      throw new Error(`Expected ${batch.length} Easy Read texts but received ${texts.length}.`);
+    output.push(...batch.map((entry, index) => ({
+      ...entry,
+      id: `easy-${entry.id}`,
+      text: texts[index]!.replace(/\s+/g, " ").trim(),
+    })));
   }
   return output;
 }

@@ -7,6 +7,7 @@ import {
   Circle,
   CircleStop,
   Gauge,
+  GraduationCap,
   History,
   MessageSquareText,
   LoaderCircle,
@@ -14,6 +15,7 @@ import {
   Play,
   RotateCcw,
   Sparkles,
+  Sprout,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -22,6 +24,7 @@ import type {
   DeviceBook,
   ExtractedLayoutBlock,
   ExtractedPageAsset,
+  ReadingLevel,
   StageSlug,
   StructuredPage,
   TextCatalogEntry,
@@ -91,6 +94,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Tooltip,
   TooltipContent,
@@ -131,6 +135,7 @@ import { uniqueStoryboardSources } from "@/lib/device-pipeline/storyboard-run-po
 import { inferCorrectAnswers } from "@/lib/device-pipeline/math-content-engine";
 import { generateStoryboardAssistantReply } from "@/lib/device-pipeline/storyboard-assistant-engine";
 import {
+  adaptCatalogForReadingLevel,
   buildTextCatalog,
   translateCatalog,
 } from "@/lib/device-pipeline/language-engine";
@@ -955,6 +960,7 @@ function StagePage({
                       assets: captionAssets,
                       pageText: extractedPage.text,
                       language: captionLanguage,
+                      readingLevel: book.readingLevel ?? "middle",
                       keys: providerKeys,
                       provider: captionProvider,
                       signal: controller.signal,
@@ -1056,6 +1062,8 @@ function StagePage({
         toast.error("Run Storyboard before Easy Read.");
         return;
       }
+      const controller = new AbortController();
+      runController.current = controller;
       setProcessing(true);
       try {
         let working: DeviceBook = {
@@ -1089,9 +1097,37 @@ function StagePage({
           ),
         };
         await onChange(working, "Built Easy Read source catalog");
+        const readingLevel = book.readingLevel ?? "middle";
+        const language =
+          book.conversionConfig?.editingLanguage &&
+          book.conversionConfig.editingLanguage !== "auto"
+            ? book.conversionConfig.editingLanguage
+            : (book.metadata?.languageCode ?? "en");
+        let easyReadCatalog = buildEasyReadCatalog(sourceTextCatalog, readingLevel);
+        if (providerKeys) {
+          try {
+            const provider = selectTranslationProvider(providerKeys);
+            easyReadCatalog = await withProviderRetry(
+              () => adaptCatalogForReadingLevel({
+                entries: sourceTextCatalog,
+                language,
+                level: readingLevel,
+                keys: providerKeys,
+                provider,
+                signal: controller.signal,
+              }),
+              controller.signal,
+            );
+          } catch (error) {
+            if (isAbortError(error)) throw error;
+            toast.warning(
+              "Easy Read used the on-device fallback. You can rerun it when an AI provider is available.",
+            );
+          }
+        }
         working = {
           ...working,
-          easyReadCatalog: buildEasyReadCatalog(sourceTextCatalog),
+          easyReadCatalog,
           stageProgress: { ...working.stageProgress, "easy-read": 100 },
           pipelineSteps: completePipelineSteps(
             working.pipelineSteps,
@@ -1102,7 +1138,11 @@ function StagePage({
         };
         await onChange(working, "Completed Easy Read");
         toast.complete("The Easy Read alternative is ready for review.");
+      } catch (error) {
+        if (!isAbortError(error))
+          toast.error(error instanceof Error ? error.message : "Easy Read failed.");
       } finally {
+        if (runController.current === controller) runController.current = undefined;
         setProcessing(false);
       }
       return;
@@ -1958,6 +1998,9 @@ function StagePage({
           </> : null}
         </div>
       </div>
+      {active === "image-captioning" || active === "easy-read" ? (
+        <ReadingLevelSelector book={book} onChange={onChange} />
+      ) : null}
       {active !== "preview" ? <Card className="mt-6">
         <CardHeader>
           <div className="flex items-start justify-between">
@@ -3692,6 +3735,98 @@ function ExtractedPageCard({
     </li>
   );
 }
+const readingLevels: Array<{
+  value: ReadingLevel;
+  label: string;
+  description: string;
+  icon: typeof Sprout;
+}> = [
+  {
+    value: "early",
+    label: "Early",
+    description: "Short sentences and familiar primary-level words.",
+    icon: Sprout,
+  },
+  {
+    value: "middle",
+    label: "Middle",
+    description: "Clear descriptions for developing readers.",
+    icon: BookOpen,
+  },
+  {
+    value: "late",
+    label: "Late",
+    description: "Detailed plain language with subject vocabulary.",
+    icon: GraduationCap,
+  },
+];
+
+function ReadingLevelSelector({
+  book,
+  onChange,
+}: {
+  book: DeviceBook;
+  onChange: Props["onChange"];
+}) {
+  const selected = book.readingLevel ?? "middle";
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle>Audience reading level</CardTitle>
+        <CardDescription>
+          This shared setting guides both Captioning and Easy Read. Changing it
+          marks both stages for rerun.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ToggleGroup
+          className="grid w-full gap-3 md:grid-cols-3"
+          onValueChange={(value) => {
+            if (!value || value === selected) return;
+            void onChange(
+              {
+                ...book,
+                readingLevel: value as ReadingLevel,
+                captionedPageNumbers: [],
+                easyReadCatalog: [],
+                stageProgress: {
+                  ...book.stageProgress,
+                  "image-captioning": 0,
+                  "easy-read": 0,
+                },
+              },
+              `Changed reading level to ${value}`,
+            );
+          }}
+          type="single"
+          value={selected}
+          variant="outline"
+        >
+          {readingLevels.map((option) => {
+            const Icon = option.icon;
+            return (
+              <ToggleGroupItem
+                aria-label={`Use ${option.label} reading level`}
+                className="h-auto min-h-24 items-start justify-start gap-3 whitespace-normal p-4 text-left"
+                key={option.value}
+                value={option.value}
+              >
+                <Icon className="mt-0.5 shrink-0" />
+                <span>
+                  <span className="block font-medium">{option.label}</span>
+                  <span className="mt-1 block text-sm font-normal text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              </ToggleGroupItem>
+            );
+          })}
+        </ToggleGroup>
+      </CardContent>
+    </Card>
+  );
+}
+
 function StageOutput({ book, stage }: { book: DeviceBook; stage: StageSlug }) {
   const rows =
     stage === "image-captioning"
@@ -3718,7 +3853,9 @@ function StageOutput({ book, stage }: { book: DeviceBook; stage: StageSlug }) {
             <Card key={row.id} size="sm">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle>Image description</CardTitle>
+                  <CardTitle>
+                    {stage === "easy-read" ? "Easy Read text" : "Image description"}
+                  </CardTitle>
                   <Badge variant="outline">Page {row.pageNumber}</Badge>
                 </div>
                 <CardDescription className="line-clamp-3">
@@ -4445,15 +4582,28 @@ function cleanImageCaption(value: string) {
   );
   return caption || "Meaningful textbook visual.";
 }
-function buildEasyReadCatalog(entries: TextCatalogEntry[]) {
+function buildEasyReadCatalog(
+  entries: TextCatalogEntry[],
+  level: ReadingLevel = "middle",
+) {
   return entries.map((entry) => ({
     ...entry,
     id: `easy-${entry.id}`,
-    text: entry.text
-      .replace(/\s*[;:]\s*/g, ". ")
-      .replace(/\s+/g, " ")
-      .trim(),
+    text: fallbackEasyReadText(entry.text, level),
   }));
+}
+function fallbackEasyReadText(value: string, level: ReadingLevel) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (level === "late") return clean;
+  const sentences = clean.replace(/\s*[;:]\s*/g, ". ");
+  if (level === "middle") return sentences;
+  return sentences
+    .replace(
+      /,\s+(and|but|because|na|lakini|kwa sababu)\s+/gi,
+      ". $1 ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
 }
 function buildGlossary(book: DeviceBook) {
   const counts = new Map<string, number>();
