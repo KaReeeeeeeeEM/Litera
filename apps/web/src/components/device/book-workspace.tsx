@@ -185,7 +185,10 @@ export function BookWorkspace({
       ? undefined
       : stages.find((stage) => stage.slug === view);
   const runningStage =
-    book.pipelineRun?.status === "running" ? book.pipelineRun.stage : undefined;
+    book.pipelineRun?.status === "running" &&
+    stageProgressValue(book, book.pipelineRun.stage) < 100
+      ? book.pipelineRun.stage
+      : undefined;
   const runningProgress = runningStage
     ? (book.stageProgress?.[runningStage] ?? 0)
     : 0;
@@ -662,6 +665,7 @@ function StagePage({
       const controller = new AbortController();
       runController.current = controller;
       setProcessing(true);
+      let working = book;
       try {
         const repeatAll = book.conversionConfig?.rangeRunMode === "all";
         let existingStoryboard = repeatAll
@@ -701,7 +705,7 @@ function StagePage({
           () =>
             derivePublicationPalette(book, structuredPages, controller.signal),
         );
-        let working: DeviceBook = {
+        working = {
           ...book,
           storyboardPages: existingStoryboard,
           stageProgress: {
@@ -799,6 +803,7 @@ function StagePage({
         working = {
           ...working,
           storyboardCss,
+          stageProgress: { ...working.stageProgress, storyboard: 100 },
           pipelineSteps: runPipelineStep(
             completePipelineSteps(
               working.pipelineSteps,
@@ -834,6 +839,20 @@ function StagePage({
             "Every page was rendered as a source-faithful accessible layout.",
           );
       } catch (error) {
+        working = {
+          ...working,
+          pipelineSteps: completePipelineSteps(
+            working.pipelineSteps,
+            ["web-rendering", "quiz-generation", "glossary", "toc-generation"],
+            "stopped",
+          ),
+          pipelineRun: {
+            stage: "storyboard",
+            status: "stopped",
+            startedAt: working.pipelineRun?.startedAt ?? new Date().toISOString(),
+          },
+        };
+        await onChange(working, "Storyboard stopped before completion");
         if (!isAbortError(error))
           toast.error(
             error instanceof Error ? error.message : "Storyboarding failed.",
@@ -858,6 +877,7 @@ function StagePage({
       const controller = new AbortController();
       runController.current = controller;
       setProcessing(true);
+      let working = book;
       try {
         const allPages = book.storyboardPages;
         const completedNumbers = new Set(book.captionedPageNumbers ?? []);
@@ -872,7 +892,7 @@ function StagePage({
             ? book.conversionConfig.editingLanguage
             : (book.metadata?.languageCode ?? "en");
         const captionProvider = selectVisionProvider(providerKeys);
-        let working: DeviceBook = {
+        working = {
           ...book,
           imageCaptions: book.imageCaptions ?? [],
           captionedPageNumbers: [...completedNumbers],
@@ -941,12 +961,16 @@ function StagePage({
               return { page, captions };
             }),
           );
-          for (const [batchIndex, { page, captions }] of results.entries()) {
+          for (const { page, captions } of results) {
           const captionedPage = applyImageCaptions(page, captions);
           const persistedCaptions = captions.map((caption) => ({
             ...caption,
+            caption: cleanImageCaption(caption.caption),
             pageNumber: page.pageNumber,
           }));
+          const captionedPageNumbers = [
+            ...new Set([...(working.captionedPageNumbers ?? []), page.pageNumber]),
+          ];
           working = {
             ...working,
             storyboardPages: (working.storyboardPages ?? []).map((candidate) =>
@@ -960,13 +984,11 @@ function StagePage({
               ),
               ...persistedCaptions,
             ],
-            captionedPageNumbers: [
-              ...new Set([...(working.captionedPageNumbers ?? []), page.pageNumber]),
-            ],
+            captionedPageNumbers,
             stageProgress: {
               ...working.stageProgress,
               "image-captioning": Math.round(
-                (((working.captionedPageNumbers?.length ?? 0) + 1) /
+                (captionedPageNumbers.length /
                   allPages.length) * 100,
               ),
             },
@@ -989,6 +1011,20 @@ function StagePage({
         await onChange(working, "Completed image captioning");
         toast.complete("Meaningful visuals now have persisted captions.");
       } catch (error) {
+        working = {
+          ...working,
+          pipelineSteps: completePipelineSteps(
+            working.pipelineSteps,
+            ["image-captioning"],
+            "stopped",
+          ),
+          pipelineRun: {
+            stage: "image-captioning",
+            status: "stopped",
+            startedAt: working.pipelineRun?.startedAt ?? new Date().toISOString(),
+          },
+        };
+        await onChange(working, "Image captioning stopped before completion");
         if (!isAbortError(error)) toast.error(
           error instanceof Error ? error.message : "Image captioning failed.",
         );
@@ -1609,28 +1645,36 @@ function StagePage({
               imageHeight,
             ].join(":");
             if (
-              imageWidth < 12 ||
-              imageHeight < 12 ||
-              coverage < 0.0004 ||
+              imageWidth < 6 ||
+              imageHeight < 6 ||
+              coverage < 0.00008 ||
               coverage > 0.72 ||
-              aspect < 0.08 ||
-              aspect > 12 ||
+              aspect < 0.03 ||
+              aspect > 30 ||
               !insidePage ||
               seenImages.has(key)
             )
               return;
             seenImages.add(key);
-            const imagePixmap = image.toPixmap();
-            const imagePng = imagePixmap.asPNG();
-            const bytes = Uint8Array.from(imagePng).buffer as ArrayBuffer;
-            assets.push({
-              id: `page-${index + 1}-image-${assets.length}`,
-              kind: "image",
-              blob: new Blob([bytes], { type: "image/png" }),
-              bytes,
-              bounds: assetBounds,
-            });
-            imagePixmap.destroy();
+            try {
+              const imagePixmap = image.toPixmap();
+              try {
+                const imagePng = imagePixmap.asPNG();
+                const bytes = Uint8Array.from(imagePng).buffer as ArrayBuffer;
+                assets.push({
+                  id: `page-${index + 1}-image-${assets.length}`,
+                  kind: "image",
+                  blob: new Blob([bytes], { type: "image/png" }),
+                  bytes,
+                  bounds: assetBounds,
+                });
+              } finally {
+                imagePixmap.destroy();
+              }
+            } catch {
+              // Masks and unusual colour spaces are recovered from the
+              // composed high-resolution page during Storyboard.
+            }
           },
         });
         page.run(imageDevice, mupdf.Matrix.identity);
@@ -2246,14 +2290,12 @@ async function ensurePageAssets(
   // Re-walking the entire PDF object tree here made Storyboard needlessly
   // expensive (and could duplicate assets) on image-heavy textbooks. Recover
   // from the source only for legacy/incomplete pages that have no saved assets.
-  const recoveredNativeAssets = page.assets?.length
-    ? []
-    : await recoverNativePageAssets(
-        book,
-        page.number,
-        sourceWidth,
-        sourceHeight,
-      );
+  const recoveredNativeAssets = await recoverNativePageAssets(
+    book,
+    page.number,
+    sourceWidth,
+    sourceHeight,
+  );
   let assets = deduplicateAssets([
     ...(page.assets ?? []),
     ...recoveredNativeAssets,
@@ -2306,10 +2348,11 @@ async function ensurePageAssets(
       coverage <= 0.04
     )
       return false;
-    const overlapsText = textBlocks.some((text) =>
-      cropObscuresText(block.bbox, text.bbox),
+    const textCoverage = regionTextCoverage(
+      block.bbox,
+      textBlocks.map((text) => text.bbox),
     );
-    return coverage >= 0.001 && coverage <= 0.48 && !overlapsText;
+    return coverage >= 0.0002 && coverage <= 0.6 && textCoverage <= 0.28;
   });
   // Native PDF assets are not a complete inventory: many textbook figures
   // are painted from vector paths, masks, or several small image fragments.
@@ -2323,7 +2366,7 @@ async function ensurePageAssets(
     .filter(
       (bbox) =>
         regionTextCoverage(bbox, textBlocks.map((block) => block.bbox)) <=
-        0.16,
+        0.28,
     )
     .filter(
       (bbox) =>
@@ -2856,12 +2899,12 @@ async function recoverNativePageAssets(
           image.getHeight(),
         ].join(":");
         if (
-          image.getWidth() < 12 ||
-          image.getHeight() < 12 ||
-          coverage < 0.0004 ||
+          image.getWidth() < 6 ||
+          image.getHeight() < 6 ||
+          coverage < 0.00008 ||
           coverage > 0.72 ||
-          aspect < 0.08 ||
-          aspect > 12 ||
+          aspect < 0.03 ||
+          aspect > 30 ||
           isHairlineVisual(bounds, pageWidth, pageHeight) ||
           seen.has(key)
         )
@@ -3175,7 +3218,7 @@ async function detectVisualRegions(
 ) {
   const bitmap = await createImageBitmap(source);
   try {
-    const width = 96;
+    const width = 192;
     const height = Math.max(
       96,
       Math.round((width * bitmap.height) / bitmap.width),
@@ -4323,10 +4366,11 @@ function buildImageCaptions(book: DeviceBook) {
       .map((block) => ({
         imageId: block.assetId!,
         pageNumber: page.pageNumber,
-        caption:
+        caption: cleanImageCaption(
           block.accessibleLabel ||
-          block.content ||
-          `Illustration on page ${page.pageNumber}`,
+            block.content ||
+            `Visual on page ${page.pageNumber}`,
+        ),
       })),
   );
 }
@@ -4335,7 +4379,7 @@ function applyImageCaptions(
   captions: Array<{ imageId: string; caption: string }>,
 ) {
   const byId = new Map(
-    captions.map((caption) => [caption.imageId, caption.caption]),
+    captions.map((caption) => [caption.imageId, cleanImageCaption(caption.caption)]),
   );
   const blocks = page.blocks.map((block) => {
     const caption = block.assetId ? byId.get(block.assetId) : undefined;
@@ -4363,6 +4407,7 @@ function applyImageCaptions(
       continue;
     }
     if (image) image.alt = caption;
+    if (!figure.dataset.id) figure.dataset.id = figure.dataset.assetId;
     const figcaption = figure.querySelector("figcaption");
     if (figcaption) figcaption.textContent = caption;
   }
@@ -4371,6 +4416,17 @@ function applyImageCaptions(
     blocks,
     html: `<!doctype html>${document.documentElement.outerHTML}`,
   };
+}
+
+function cleanImageCaption(value: string) {
+  let caption = value.replace(/\s+/g, " ").trim();
+  const duplicatePrefix = /^(?:(?:an?\s+)?(?:image|illustration|figure|diagram|photo|picture)\s+(?:of|showing|depicting)\s+){2,}/i;
+  caption = caption.replace(duplicatePrefix, "");
+  caption = caption.replace(
+    /^((?:an?\s+)?(?:image|illustration|figure|diagram|photo|picture)\s+(?:of|showing|depicting)\s+)\1+/i,
+    "$1",
+  );
+  return caption || "Meaningful textbook visual.";
 }
 function buildEasyReadCatalog(entries: TextCatalogEntry[]) {
   return entries.map((entry) => ({

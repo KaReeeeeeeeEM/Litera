@@ -107,8 +107,10 @@ function bookExists(book: DeviceBook | undefined) {
 }
 
 function bookIsRunning(book: DeviceBook) {
-  return book.pipelineRun?.status === "running" ||
-    Object.values(book.pipelineSteps ?? {}).some((step) => step?.status === "running");
+  const run = book.pipelineRun;
+  return Boolean(
+    run?.status === "running" && (book.stageProgress?.[run.stage] ?? 0) < 100,
+  );
 }
 
 function latestCompletedAt(book: DeviceBook) {
@@ -425,8 +427,8 @@ export function DeviceLibrary() {
   );
   const unreadBooks = books.filter(bookHasUnreadCompletion);
   return (
-    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-muted/20">
-      <header className="z-30 shrink-0 border-b bg-background/90 backdrop-blur-xl">
+    <main className="fixed inset-0 flex min-h-0 w-full flex-col overflow-hidden bg-muted/20">
+      <header className="relative z-30 shrink-0 border-b bg-background/90 backdrop-blur-xl">
         <div className="flex min-h-16 items-center gap-2 px-4 lg:px-6">
           <Button
             aria-label="Open library"

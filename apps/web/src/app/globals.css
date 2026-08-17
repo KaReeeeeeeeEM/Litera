@@ -349,12 +349,12 @@ html[data-motion-ready="true"] [data-reveal][data-visible="true"] {
   display: none !important;
 }
 
-.relative:has(> [aria-label^="Re-rendering page"]) div:has(> iframe[title^="Generated HTML for page"]) {
+.storyboard-page-rerendering div:has(> iframe[title^="Generated HTML for page"]) {
   position: relative;
   overflow: hidden;
 }
 
-.relative:has(> [aria-label^="Re-rendering page"]) div:has(> iframe[title^="Generated HTML for page"])::after {
+.storyboard-page-rerendering div:has(> iframe[title^="Generated HTML for page"])::after {
   position: absolute;
   inset: 0;
   z-index: 2;
@@ -365,7 +365,7 @@ html[data-motion-ready="true"] [data-reveal][data-visible="true"] {
   animation: page-rerender-shimmer 1.55s cubic-bezier(.4, 0, .2, 1) infinite;
 }
 
-.relative:has(> [aria-label^="Re-rendering page"]) iframe[title^="Generated HTML for page"] {
+.storyboard-page-rerendering iframe[title^="Generated HTML for page"] {
   pointer-events: none;
   opacity: .72;
   filter: saturate(.72) contrast(.92);

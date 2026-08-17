@@ -7,8 +7,13 @@ import {
   Languages,
   List,
   Pause,
+  Play,
   Settings,
+  SkipBack,
+  SkipForward,
+  Square,
   Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceBook, SpeechEntry } from "@/components/device/device-types";
@@ -26,9 +31,13 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   const [autoplay, setAutoplay] = useState(true);
   const [highlightMode, setHighlightMode] = useState<HighlightMode>("word");
   const [language, setLanguage] = useState(book.metadata?.languageCode || "source");
+  const [frameRevision, setFrameRevision] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
   const audio = useRef<HTMLAudioElement | undefined>(undefined);
   const activeSpeech = useRef(0);
+  const [activeSpeechIndex, setActiveSpeechIndex] = useState(0);
+  const playbackSession = useRef(0);
+  const playEntryRef = useRef<(entryIndex: number, session: number) => void>(() => undefined);
   const originals = useRef(new Map<HTMLElement, string>());
   const page = pages[Math.min(index, Math.max(0, pages.length - 1))];
   const availableSpeechLanguages = useMemo(
@@ -55,7 +64,9 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     [book.speechEntries, effectiveLanguage, page?.pageNumber],
   );
   const speechRef = useRef(speech);
-  speechRef.current = speech;
+  useEffect(() => {
+    speechRef.current = speech;
+  }, [speech]);
 
   const clearHighlight = useCallback(() => {
     const document = iframe.current?.contentDocument;
@@ -69,9 +80,26 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   const targetFor = useCallback((entry: SpeechEntry) => {
     const document = iframe.current?.contentDocument;
     if (!document) return undefined;
-    return [...document.querySelectorAll<HTMLElement>("[data-id]")].find(
-      (element) => element.dataset.id === entry.textId,
+    const escaped = CSS.escape(entry.textId);
+    const direct = document.querySelector<HTMLElement>(
+      `[data-id="${escaped}"],[data-block-id="${escaped}"],[data-asset-id="${escaped}"]`,
     );
+    if (direct) return direct;
+    const needle = normalizeReaderText(entry.inputText ?? "");
+    if (!needle) return undefined;
+    return [...document.querySelectorAll<HTMLElement>(
+      "[data-layout-block],h1,h2,h3,h4,p,li,figure,figcaption",
+    )].find((element) => {
+      const candidate = normalizeReaderText(
+        element.tagName === "FIGURE"
+          ? element.querySelector("figcaption")?.textContent ||
+              element.querySelector("img")?.getAttribute("alt") || ""
+          : element.textContent ?? "",
+      );
+      return candidate === needle ||
+        (candidate.length > 18 && needle.length > 18 &&
+          (candidate.includes(needle) || needle.includes(candidate)));
+    });
   }, []);
 
   const prepareHighlight = useCallback((entry: SpeechEntry) => {
@@ -124,11 +152,13 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     clearHighlight();
     setPlaying(false);
     activeSpeech.current = 0;
+    setActiveSpeechIndex(0);
     originals.current.clear();
     setIndex(Math.max(0, Math.min(pages.length - 1, next)));
   }, [clearHighlight, pages.length]);
 
-  const playEntry = useCallback((entryIndex: number) => {
+  const playEntry = useCallback((entryIndex: number, session: number) => {
+    if (session !== playbackSession.current) return;
     const entries = speechRef.current;
     const entry = entries[entryIndex];
     if (!entry) {
@@ -141,13 +171,17 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     if (audio.current?.src) URL.revokeObjectURL(audio.current.src);
     const player = new Audio(URL.createObjectURL(entry.audio));
     activeSpeech.current = entryIndex;
+    setActiveSpeechIndex(entryIndex);
     prepareHighlight(entry);
     player.ontimeupdate = () => updateWordHighlight(entry, player.currentTime * 1000);
-    player.onended = () => playEntry(entryIndex + 1);
-    player.onerror = () => playEntry(entryIndex + 1);
+    player.onended = () => playEntryRef.current(entryIndex + 1, session);
+    player.onerror = () => playEntryRef.current(entryIndex + 1, session);
     audio.current = player;
     void player.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
   }, [autoplay, changePage, clearHighlight, index, pages.length, prepareHighlight, updateWordHighlight]);
+  useEffect(() => {
+    playEntryRef.current = playEntry;
+  }, [playEntry]);
 
   function toggleSpeech() {
     if (playing) {
@@ -159,27 +193,55 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
       void audio.current.play().then(() => setPlaying(true));
       return;
     }
-    playEntry(0);
+    const session = ++playbackSession.current;
+    playEntry(0, session);
+  }
+
+  function stopSpeech() {
+    playbackSession.current += 1;
+    audio.current?.pause();
+    if (audio.current?.src) URL.revokeObjectURL(audio.current.src);
+    audio.current = undefined;
+    activeSpeech.current = 0;
+    setActiveSpeechIndex(0);
+    setPlaying(false);
+    clearHighlight();
+  }
+
+  function skipSpeech(offset: number) {
+    if (!speech.length) return;
+    const next = Math.max(0, Math.min(speech.length - 1, activeSpeech.current + offset));
+    const session = ++playbackSession.current;
+    playEntry(next, session);
   }
 
   useEffect(() => () => {
+    playbackSession.current += 1;
     audio.current?.pause();
     if (audio.current?.src) URL.revokeObjectURL(audio.current.src);
   }, []);
 
   useEffect(() => {
-    if (!autoplay || !speech.length) return;
-    const frame = requestAnimationFrame(() => playEntry(0));
-    return () => cancelAnimationFrame(frame);
-  }, [autoplay, index, language]); // playEntry intentionally follows the current queue
+    if (!autoplay || !speech.length || !frameRevision) return;
+    const session = ++playbackSession.current;
+    const frame = requestAnimationFrame(() => playEntry(0, session));
+    return () => {
+      cancelAnimationFrame(frame);
+      if (playbackSession.current === session) {
+        playbackSession.current += 1;
+        audio.current?.pause();
+      }
+    };
+  }, [autoplay, frameRevision, index, language, playEntry, speech.length]);
 
   function prepareFrame() {
     const document = iframe.current?.contentDocument;
     if (!document || document.getElementById("litera-reader-highlight-style")) return;
     const style = document.createElement("style");
     style.id = "litera-reader-highlight-style";
-    style.textContent = `[data-litera-reader-highlight="sentence"]{background:#fde68a!important;box-shadow:0 0 0 .18em #fde68a;border-radius:.14em}[data-litera-reader-highlight="word"] .litera-spoken-word.is-active{background:#fde047!important;box-shadow:0 0 0 .12em #fde047;border-radius:.12em}`;
+    style.textContent = `[data-litera-reader-highlight="sentence"]{background:#fde68a!important;box-shadow:0 0 0 .18em #fde68a;border-radius:.14em}figure[data-litera-reader-highlight="sentence"]{outline:.35cqw solid #facc15;outline-offset:.25cqw}[data-litera-reader-highlight="word"] .litera-spoken-word.is-active{background:#fde047!important;box-shadow:0 0 0 .12em #fde047;border-radius:.12em}`;
     document.head.append(style);
+    setFrameRevision((value) => value + 1);
   }
 
   if (!page)
@@ -191,8 +253,8 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   ];
 
   return (
-    <Card className="relative mt-6 min-h-[46rem] w-full overflow-hidden bg-muted/30 p-3 sm:p-6">
-      <div className="flex min-h-[40rem] w-full items-start justify-center overflow-auto pb-24">
+    <Card className="relative mt-6 flex h-[calc(100dvh-9rem)] min-h-[42rem] w-full flex-col overflow-hidden rounded-none bg-muted/30">
+      <div className="flex min-h-0 w-full flex-1 items-start justify-center overflow-auto p-3 sm:p-6">
         <iframe
           className="aspect-[var(--page-ratio)] w-full border-0 bg-white shadow-xl"
           onLoad={prepareFrame}
@@ -204,18 +266,26 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
         />
       </div>
 
-      <div className="absolute inset-x-3 bottom-4 z-20 mx-auto flex max-w-3xl items-center gap-1 rounded-2xl bg-popover/95 p-2 text-popover-foreground shadow-lg ring-1 ring-border backdrop-blur-md sm:inset-x-6">
+      <div className="sticky inset-x-0 bottom-0 z-20 flex w-full shrink-0 items-center gap-1 rounded-none bg-popover/95 p-2 text-popover-foreground shadow-[0_-8px_24px_-18px_rgba(0,0,0,.55)] ring-1 ring-border backdrop-blur-md" role="group" aria-label="Reader controls">
         <Popover>
           <PopoverTrigger asChild><Button className="min-w-0 flex-1 justify-start sm:min-w-52" variant="ghost"><BookOpen data-icon="inline-start" /><span className="truncate">{book.metadata?.title || book.name}</span></Button></PopoverTrigger>
           <PopoverContent align="start" className="w-80"><p className="mb-2 font-medium">Contents</p><div className="max-h-64 space-y-1 overflow-auto">{(book.tableOfContents ?? []).map((item) => { const target = pages.findIndex((candidate) => candidate.pageNumber === item.pageNumber); return <Button className="w-full justify-start" key={`${item.pageNumber}-${item.title}`} onClick={() => target >= 0 && changePage(target)} size="sm" variant="ghost"><List />{item.title}</Button>; })}</div></PopoverContent>
         </Popover>
         <div className="flex shrink-0 items-center rounded-xl bg-muted/60"><Button aria-label="Previous page" disabled={index === 0} onClick={() => changePage(index - 1)} size="icon" variant="ghost"><ChevronLeft /></Button><span className="min-w-24 text-center text-sm tabular-nums">Page {page.digitalPageNumber ?? index + 1} of {pages.length}</span><Button aria-label="Next page" disabled={index === pages.length - 1} onClick={() => changePage(index + 1)} size="icon" variant="ghost"><ChevronRight /></Button></div>
         <div className="flex flex-1 justify-end">
-          <Button aria-label={playing ? "Pause narration" : "Read page aloud"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Volume2 />}</Button>
+          <Button aria-label="Previous narration" disabled={!speech.length || activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button>
+          <Button aria-label={playing ? "Pause narration" : "Read page aloud"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button>
+          <Button aria-label="Next narration" disabled={!speech.length || activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button>
+          <Button aria-label="Stop narration" disabled={!speech.length} onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button>
+          <Button aria-label={playing ? "Text to speech active" : "Text to speech"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button>
           <Popover><PopoverTrigger asChild><Button aria-label="Language" size="icon" variant="ghost"><Languages /></Button></PopoverTrigger><PopoverContent align="end" className="w-60"><Select onValueChange={setLanguage} value={language}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{languages.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></PopoverContent></Popover>
           <Popover><PopoverTrigger asChild><Button aria-label="Reader settings" size="icon" variant="ghost"><Settings /></Button></PopoverTrigger><PopoverContent align="end" className="grid w-72 gap-4"><div><p className="font-medium">Reader settings</p><p className="mt-1 text-sm text-muted-foreground">Narration follows every text entry in page order.</p></div><label className="flex items-center justify-between gap-4 text-sm"><span>Read pages automatically</span><input checked={autoplay} onChange={(event) => setAutoplay(event.target.checked)} type="checkbox" /></label><label className="grid gap-2 text-sm"><span>Highlighting</span><Select onValueChange={(value) => setHighlightMode(value as HighlightMode)} value={highlightMode}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="word">Word by word</SelectItem><SelectItem value="sentence">Sentence by sentence</SelectItem></SelectContent></Select></label></PopoverContent></Popover>
         </div>
       </div>
     </Card>
   );
+}
+
+function normalizeReaderText(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
 }

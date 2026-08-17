@@ -101,13 +101,21 @@ export function ConversionSetup({
       : value;
   });
   const [pending, setPending] = useState(false);
-  const [splitStart, setSplitStart] = useState("1");
-  const [splitEnd, setSplitEnd] = useState("1");
+  const initialSplitRanges = parsePageParts(config.pageParts);
+  const [splitStart, setSplitStart] = useState(String(initialSplitRanges[0]?.from ?? 1));
+  const [splitEnd, setSplitEnd] = useState(String(initialSplitRanges[0]?.to ?? 1));
+  const [additionalSplitRanges, setAdditionalSplitRanges] = useState(
+    initialSplitRanges.slice(1),
+  );
   const sourcePages = Array.from(
     { length: Math.max(1, book.sourceTotalPages ?? 1) },
     (_, index) => index + 1,
   );
-  const splitRanges = parsePageParts(config.pageParts);
+  const primarySplitRange = {
+    from: Math.min(Number(splitStart) || 1, Number(splitEnd) || 1),
+    to: Math.max(Number(splitStart) || 1, Number(splitEnd) || 1),
+  };
+  const splitRanges = [primarySplitRange, ...additionalSplitRanges];
   function update<K extends keyof ConversionConfig>(
     key: K,
     value: ConversionConfig[K],
@@ -127,24 +135,27 @@ export function ConversionSetup({
     const from = Number(splitStart);
     const to = Number(splitEnd);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return;
-    update(
-      "pageParts",
-      collapseSetupRanges([
-        ...splitRanges,
-        { from: Math.min(from, to), to: Math.max(from, to) },
-      ]),
-    );
+    const range = { from: Math.min(from, to), to: Math.max(from, to) };
+    const nextRanges = [...additionalSplitRanges, range];
+    setAdditionalSplitRanges(nextRanges);
+    const next = Math.min(sourcePages.length, range.to + 1);
+    setSplitStart(String(next));
+    setSplitEnd(String(next));
   }
   function removeSplitRange(index: number) {
-    update(
-      "pageParts",
-      collapseSetupRanges(splitRanges.filter((_, itemIndex) => itemIndex !== index)),
+    if (index === 0) return;
+    setAdditionalSplitRanges((current) =>
+      current.filter((_, itemIndex) => itemIndex !== index - 1),
     );
   }
   async function complete() {
     setPending(true);
     try {
-      await onComplete(config);
+      await onComplete(
+        config.scope === "split"
+          ? { ...config, pageParts: collapseSetupRanges(splitRanges) }
+          : config,
+      );
     } finally {
       setPending(false);
     }
@@ -303,8 +314,13 @@ export function ConversionSetup({
                       <Select
                         onValueChange={(value) => {
                           setSplitStart(value);
-                          if (Number(value) > Number(splitEnd))
+                          const nextEnd = Number(value) > Number(splitEnd) ? value : splitEnd;
+                          if (nextEnd !== splitEnd)
                             setSplitEnd(value);
+                          update("pageParts", collapseSetupRanges([
+                            { from: Math.min(Number(value), Number(nextEnd)), to: Math.max(Number(value), Number(nextEnd)) },
+                            ...additionalSplitRanges,
+                          ]));
                         }}
                         value={splitStart}
                       >
@@ -325,7 +341,13 @@ export function ConversionSetup({
                     <label className="grid gap-2 text-sm font-medium">
                       End page
                       <Select
-                        onValueChange={setSplitEnd}
+                        onValueChange={(value) => {
+                          setSplitEnd(value);
+                          update("pageParts", collapseSetupRanges([
+                            { from: Math.min(Number(splitStart), Number(value)), to: Math.max(Number(splitStart), Number(value)) },
+                            ...additionalSplitRanges,
+                          ]));
+                        }}
                         value={splitEnd}
                       >
                         <SelectTrigger className="h-9 w-full pr-4">
@@ -351,9 +373,9 @@ export function ConversionSetup({
                       {splitRanges.map((range, index) => (
                         <Badge className="gap-1.5 py-1.5" key={`${range.from}-${range.to}`} variant="secondary">
                           Pages {range.from}{range.to === range.from ? "" : `–${range.to}`}
-                          <button aria-label={`Remove pages ${range.from} to ${range.to}`} onClick={() => removeSplitRange(index)} type="button">
+                          {index > 0 ? <button aria-label={`Remove pages ${range.from} to ${range.to}`} onClick={() => removeSplitRange(index)} type="button">
                             <Trash2 className="size-3.5" />
-                          </button>
+                          </button> : null}
                         </Badge>
                       ))}
                     </div>

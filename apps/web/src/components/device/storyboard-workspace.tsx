@@ -187,10 +187,21 @@ export function StoryboardWorkspace({
 
   useEffect(() => {
     const onAnswerFeedback = (event: MessageEvent) => {
-      if (event.source !== document.querySelector<HTMLIFrameElement>("iframe")?.contentWindow) return;
+      const fromStoryboard = [...document.querySelectorAll<HTMLIFrameElement>(
+        'iframe[title^="Generated HTML for page"]',
+      )].some((frame) => frame.contentWindow === event.source);
+      if (!fromStoryboard) return;
       const data = event.data as { type?: string; correct?: number; incorrect?: number; checked?: number };
-      if (data?.type !== "litera-answer-feedback" || !data.checked) return;
+      if (data?.type !== "litera-answer-feedback") return;
       const swahili = page?.html.includes("Wasilisha majibu");
+      if (!data.checked) {
+        toast.info(
+          swahili
+            ? "Majibu yamehifadhiwa kwa ukaguzi. Zoezi hili halina majibu ya moja kwa moja yaliyotambuliwa."
+            : "Responses recorded for review. This activity has no detected answer key.",
+        );
+        return;
+      }
       if ((data.incorrect ?? 0) > 0) {
         toast.error(swahili ? `${data.incorrect} bado si sahihi. Jaribu tena.` : `${data.incorrect} answer${data.incorrect === 1 ? " is" : "s are"} not correct yet. Try again.`);
       } else {
@@ -430,7 +441,7 @@ export function StoryboardWorkspace({
               pages={pages}
               setPageIndex={setPageIndex}
             />
-            <div className="relative min-w-0 flex-1">
+            <div className={cn("relative min-w-0 flex-1", rerendering && "storyboard-page-rerendering")}>
               {canvas}
               {rerendering ? (
                 <div
