@@ -342,7 +342,7 @@ export type DeviceBook = {
     pageNumber: number;
     caption: string;
   }>;
-  /** Pages durably completed by Image Captioning, including pages with no meaningful visual. */
+  /** Pages durably completed by Captioning, including pages with no meaningful visual. */
   captionedPageNumbers?: number[];
   glossary?: Array<{ term: string; definition: string }>;
   tableOfContents?: Array<{ title: string; pageNumber: number; level: number }>;
@@ -421,7 +421,7 @@ export const stages = [
   },
   {
     slug: "image-captioning",
-    label: "Image Captioning",
+    label: "Captioning",
     description: "Describe meaningful visuals and review decorative images.",
     icon: Captions,
     color: "#7c3aed",

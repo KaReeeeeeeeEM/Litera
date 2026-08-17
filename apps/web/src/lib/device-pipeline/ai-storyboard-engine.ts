@@ -128,7 +128,7 @@ Page text: ${(pageText ?? "").replace(/\s+/g, " ").trim().slice(0, 2500)}
 Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=${asset.bounds.y}, width=${asset.bounds.w}, height=${asset.bounds.h}`).join("\n")}`;
   let raw: string;
   if (provider === "openai") {
-    if (!keys.openai) throw new Error("Configure an OpenAI vision key before running Image Captioning.");
+    if (!keys.openai) throw new Error("Configure an OpenAI vision key before running Captioning.");
     const content = [
       { type: "input_text", text: request },
       { type: "input_image", image_url: pageDataUrl, detail: "high" },
@@ -147,7 +147,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     if (!response.ok) throw new Error(payload.error?.message || "OpenAI could not caption these images.");
     raw = payload.output_text ?? payload.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "";
   } else if (provider === "gemini") {
-    if (!keys.gemini) throw new Error("Configure a Gemini vision key before running Image Captioning.");
+    if (!keys.gemini) throw new Error("Configure a Gemini vision key before running Captioning.");
     const parts = [
       { inlineData: { mimeType: pageImage.type || "image/png", data: pageDataUrl.split(",")[1] ?? "" } },
       { text: request },
@@ -166,7 +166,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     if (!response.ok) throw new Error(payload.error?.message || "Gemini could not caption these images.");
     raw = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
   } else if (provider === "anthropic") {
-    if (!keys.anthropic) throw new Error("Configure an Anthropic vision key before running Image Captioning.");
+    if (!keys.anthropic) throw new Error("Configure an Anthropic vision key before running Captioning.");
     const content = [
       { type: "image", source: { type: "base64", media_type: pageImage.type || "image/png", data: pageDataUrl.split(",")[1] ?? "" } },
       { type: "text", text: request },
@@ -185,7 +185,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     if (!response.ok) throw new Error(payload.error?.message || "Anthropic could not caption these images.");
     raw = payload.content?.filter((item) => item.type === "text").map((item) => item.text ?? "").join("") ?? "";
   } else {
-    throw new Error("Image Captioning requires an OpenAI, Gemini, or Anthropic vision key.");
+    throw new Error("Captioning requires an OpenAI, Gemini, or Anthropic vision key.");
   }
   const parsed = parseCaptionPayload(raw);
   const requested = new Set(assets.map((asset) => asset.id));

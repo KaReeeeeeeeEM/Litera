@@ -24,7 +24,7 @@ export const LITERA_PIPELINE: Record<StageSlug, PipelineStepDefinition[]> = {
   ],
   preview: [{ slug: "package-web", label: "Live Reader Preview", dependsOn: ["web-rendering"] }],
   "image-captioning": [
-    { slug: "image-captioning", label: "Image Captioning", dependsOn: ["web-rendering"] },
+    { slug: "image-captioning", label: "Captioning", dependsOn: ["web-rendering"] },
   ],
   "easy-read": [
     { slug: "text-catalog", label: "Text Catalog", dependsOn: ["web-rendering"] },

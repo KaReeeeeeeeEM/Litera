@@ -869,7 +869,7 @@ function StagePage({
     }
     if (active === "image-captioning") {
       if (!book.storyboardPages?.length) {
-        toast.error("Run Storyboard before Image Captioning.");
+        toast.error("Run Storyboard before Captioning.");
         return;
       }
       if (!providerKeys) {
@@ -914,7 +914,7 @@ function StagePage({
             startedAt: new Date().toISOString(),
           },
         };
-        await onChange(working, "Started image captioning");
+        await onChange(working, "Started Captioning");
         const captionConcurrency = working.performanceMode === "maximum" ? 3 : 2;
         let fallbackCaptionCount = 0;
         for (let index = 0; index < pages.length; index += captionConcurrency) {
@@ -1021,10 +1021,10 @@ function StagePage({
           ),
           pipelineRun: { ...working.pipelineRun!, status: "complete" },
         };
-        await onChange(working, "Completed image captioning");
+        await onChange(working, "Completed Captioning");
         if (fallbackCaptionCount)
           toast.warning(
-            `Image Captioning completed. ${fallbackCaptionCount} visual descriptions used source-context fallbacks and can be reviewed.`,
+            `Captioning completed. ${fallbackCaptionCount} visual descriptions used source-context fallbacks and can be reviewed.`,
           );
         else toast.complete("Meaningful visuals now have persisted captions.");
       } catch (error) {
