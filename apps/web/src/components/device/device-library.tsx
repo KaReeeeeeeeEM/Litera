@@ -425,8 +425,8 @@ export function DeviceLibrary() {
   );
   const unreadBooks = books.filter(bookHasUnreadCompletion);
   return (
-    <main className="min-h-screen bg-muted/20">
-      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur-xl">
+    <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-muted/20">
+      <header className="z-30 shrink-0 border-b bg-background/90 backdrop-blur-xl">
         <div className="flex min-h-16 items-center gap-2 px-4 lg:px-6">
           <Button
             aria-label="Open library"
@@ -487,24 +487,28 @@ export function DeviceLibrary() {
         </div>
       </header>
       {settings ? (
-        <DeviceSettingsPage
-          onBack={() => setSettings(false)}
-          onConfigureProviders={() => setVault(true)}
-          providerStatus={providerStatus}
-        />
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <DeviceSettingsPage
+            onBack={() => setSettings(false)}
+            onConfigureProviders={() => setVault(true)}
+            providerStatus={providerStatus}
+          />
+        </div>
       ) : help ? (
-        <HelpPage
-          onBack={() => setHelp(false)}
-          onTutorial={() => {
-            setHelp(false);
-            setTutorial(true);
-          }}
-        />
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <HelpPage
+            onBack={() => setHelp(false)}
+            onTutorial={() => {
+              setHelp(false);
+              setTutorial(true);
+            }}
+          />
+        </div>
       ) : (
-        <div className={cn("grid min-h-[calc(100vh-4rem)] transition-[grid-template-columns] duration-400", libraryCollapsed ? "lg:grid-cols-[4.5rem_1fr]" : "lg:grid-cols-[18rem_1fr]")}>
+        <div className={cn("grid min-h-0 flex-1 overflow-hidden transition-[grid-template-columns] duration-400", libraryCollapsed ? "lg:grid-cols-[4.5rem_1fr]" : "lg:grid-cols-[18rem_1fr]")}>
           <aside
             className={cn(
-              "fixed inset-y-16 left-0 z-40 flex h-[calc(100vh-4rem)] w-72 flex-col overflow-hidden border-r bg-background p-3 transition-all duration-400 lg:sticky lg:top-16 lg:z-auto lg:w-auto lg:translate-x-0",
+              "fixed inset-y-16 left-0 z-40 flex w-72 flex-col overflow-hidden border-r bg-background p-3 transition-all duration-400 lg:static lg:z-auto lg:h-full lg:w-auto lg:translate-x-0",
               sidebar ? "translate-x-0" : "-translate-x-full",
             )}
           >
@@ -578,7 +582,8 @@ export function DeviceLibrary() {
           </aside>
           <section
             className={cn(
-              "min-w-0",
+              "min-h-0 min-w-0",
+              selected?.setupComplete ? "overflow-hidden" : "overflow-y-auto",
               selected && !selected.setupComplete && "p-5 md:p-8 lg:p-10",
             )}
           >

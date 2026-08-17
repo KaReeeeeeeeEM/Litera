@@ -215,8 +215,8 @@ export function BookWorkspace({
     );
   }
   return (
-    <div className="grid min-h-[calc(100vh-4rem)] grid-cols-[12rem_minmax(0,1fr)] bg-background">
-      <aside className="sticky top-16 flex h-[calc(100vh-4rem)] flex-col border-r bg-muted/10 p-3">
+    <div className="grid h-full min-h-0 grid-cols-[12rem_minmax(0,1fr)] overflow-hidden bg-background">
+      <aside className="flex h-full min-h-0 flex-col overflow-hidden border-r bg-muted/10 p-3">
         <Button
           className="mb-3 w-full justify-start"
           onClick={() => setView("overview")}
@@ -315,8 +315,8 @@ export function BookWorkspace({
           </div>
         ) : null}
       </aside>
-      <section className="min-w-0">
-        <header className="sticky top-16 z-20 flex min-h-14 items-center gap-2 border-b bg-background/95 px-5 backdrop-blur">
+      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <header className="z-20 flex min-h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-5 backdrop-blur">
           <div className="mr-auto min-w-0">
             <p className="truncate text-sm font-semibold">
               {book.name.replace(/\.[^.]+$/, "")}
@@ -380,7 +380,7 @@ export function BookWorkspace({
             <span className="sr-only">Version history</span>
           </Button>
         </header>
-        <div className="p-5 md:p-8">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 md:p-8">
           {view === "overview" ? (
             <Overview book={book} onSelect={selectStage} />
           ) : activeStage ? (
