@@ -133,8 +133,10 @@ function detectNoInputActivities(
     .split(/\n+/)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
+  // "Room to Read" and similar proper names must not be treated as reading
+  // activities. Receptive instructions begin with an instruction verb.
   const receptiveReadOnly =
-    /\b(?:read|practise reading|practice reading|soma)\b/i;
+    /^(?:please\s+)?(?:read|practise reading|practice reading|soma)\b/i;
   const requiresResponse =
     /\b(?:answer(?: the)? questions?|write|complete|fill|calculate|solve|andika|jibu|jaza|kokotoa|hesabu)\b|\?/i;
   const prompts = lines.filter(
@@ -363,9 +365,15 @@ function activityType(text: string): ActivityType {
   if (/(true or false|kweli au si kweli)/i.test(text)) return "true-false";
   if (/(choose|select|chagua|circle).*(answer|jibu)/i.test(text))
     return "multiple-choice";
+  if (
+    /\b(?:identify|compare|pick|point to|onyesha|tambua|linganisha)\b/i.test(text) &&
+    /\b(?:group|objects?|pictures?|rows?|kikundi|vitu|picha)\b/i.test(text)
+  )
+    return "multiple-choice";
   if (/(draw|chora).*(?:clock|saa|muda)/i.test(text)) return "short-answer";
   if (/(draw|chora|colour|color)/i.test(text)) return "drawing";
-  if (/(discuss|jadili|group|kikundi)/i.test(text)) return "discussion";
+  if (/(discuss|jadili|in (?:pairs?|groups?)|kwa vikundi|kikundi cha)/i.test(text))
+    return "discussion";
   return "short-answer";
 }
 
@@ -386,9 +394,17 @@ function responsePresentation(text: string, type: ActivityType) {
     /\b(?:describe|discuss|eleza|fafanua|jadili|orodhesha|taja mifano|andika sentensi|toa sababu)\b/i.test(
       text,
     );
+  const numberWordAnswers = [
+    ...text.matchAll(
+      /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten)\b/gi,
+    ),
+  ].map((match) => match[1]!.toLocaleLowerCase());
   const answerCount =
     type === "fill-blank"
       ? Math.max(1, (text.match(/(?:[_–—-]\s*){3,}/g) ?? []).length)
+      : /\bwrite\b.*\b(?:numbers?|numerals?)\b/i.test(text) &&
+          numberWordAnswers.length >= 2
+        ? numberWordAnswers.length
       : 1;
   return {
     inputType: time ? ("time" as const) : ("text" as const),
@@ -500,6 +516,26 @@ function matchingPairsFromColumns(source: string) {
     : [];
 }
 
+function numberWordCorrectAnswers(prompt: string) {
+  if (!/\bwrite\b.*\b(?:numbers?|numerals?)\b/i.test(prompt)) return [];
+  const values: Record<string, string> = {
+    zero: "0",
+    one: "1",
+    two: "2",
+    three: "3",
+    four: "4",
+    five: "5",
+    six: "6",
+    seven: "7",
+    eight: "8",
+    nine: "9",
+    ten: "10",
+  };
+  return [...prompt.matchAll(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten)\b/gi)]
+    .map((match) => values[match[1]!.toLocaleLowerCase()]!)
+    .filter(Boolean);
+}
+
 export function detectActivities(
   pageNumber: number,
   sourceText: string,
@@ -526,7 +562,7 @@ export function detectActivities(
     .filter(Boolean);
   const activityHeading = activityHeadingPattern;
   const imperative =
-    /^(?:\d+[.)]\s*)?(?:answer|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|andika|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
+    /^(?:\d+[.)]\s*)?(?:answer|write|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
   const itemStart = /^(?:\d+[.)]|\([a-z]\)|[a-z][.)])\s+/i;
   const exampleHeading = /^(?:mfano|example)(?:\s+(?:wa\s+)?\d+)?\b/i;
   const oralInstruction =
@@ -540,7 +576,7 @@ export function detectActivities(
   const candidates: string[] = [];
   const responsePrompt = (value: string) =>
     !isMetadataIdentifier(value) &&
-    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:answer|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
+    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:answer|write|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
   const flush = () => {
     const prompt = current.replace(/\s+/g, " ").trim();
     const readOnlyInstruction =
@@ -654,6 +690,8 @@ export function detectActivities(
       type === "matching" && explicitPairs.length < 2
         ? matchingPairsFromColumns(activitySource)
         : explicitPairs;
+    const inferredAnswers = inferCorrectAnswers(prompt);
+    const wordAnswers = numberWordCorrectAnswers(prompt);
     return {
       id: `page-${pageNumber}-activity-${index}`,
       pageNumber,
@@ -671,7 +709,7 @@ export function detectActivities(
       ...responsePresentation(prompt, type),
       options: options.length >= 2 ? options : undefined,
       matchingPairs: pairs.length >= 2 ? pairs : undefined,
-      correctAnswers: inferCorrectAnswers(prompt),
+      correctAnswers: wordAnswers.length ? wordAnswers : inferredAnswers,
       sourceBounds: numberedRegions[index],
     };
   });

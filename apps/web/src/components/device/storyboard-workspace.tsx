@@ -58,6 +58,8 @@ import {
   sanitizeStoryboardHtml,
 } from "@/lib/device-pipeline/ai-storyboard-engine";
 import { cn } from "@/lib/utils";
+
+const handledAnswerFeedbackEvents = new WeakSet<MessageEvent>();
 import { renderStoryboardHtml } from "@/lib/device-pipeline/storyboard-engine";
 import { toast } from "@/lib/feedback";
 
@@ -193,6 +195,8 @@ export function StoryboardWorkspace({
       if (!fromStoryboard) return;
       const data = event.data as { type?: string; correct?: number; incorrect?: number; checked?: number };
       if (data?.type !== "litera-answer-feedback") return;
+      if (handledAnswerFeedbackEvents.has(event)) return;
+      handledAnswerFeedbackEvents.add(event);
       const swahili = page?.html.includes("Wasilisha majibu");
       if (!data.checked) {
         toast.info(

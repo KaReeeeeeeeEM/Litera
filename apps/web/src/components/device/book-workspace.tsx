@@ -5345,7 +5345,11 @@ function reinforceTablesAndActivities(
         `<button class="litera-submit-all" data-litera-submit type="button" disabled>${escapeHtmlAttribute(localizedAnswerSubmitLabel(pageText))}</button>`,
       );
     }
-    document.body.insertAdjacentHTML("beforeend", answerFeedbackRuntime());
+    const hasAnswerRuntime = [...document.scripts].some((script) =>
+      script.textContent?.includes("litera-answer-feedback"),
+    );
+    if (!hasAnswerRuntime)
+      document.body.insertAdjacentHTML("beforeend", answerFeedbackRuntime());
     return `<!doctype html>${document.documentElement.outerHTML}`;
   }
   for (const activity of activities) {
@@ -5543,7 +5547,14 @@ function insertActivityControl(target: Element, control: string) {
 }
 
 function findActivityTarget(document: Document, prompt: string) {
-  const needle = normalizeSemanticText(prompt).toLocaleLowerCase();
+  // OCR often appends watermarks, answer labels and the printed folio to an
+  // activity prompt. Match the leading instruction sentence so the response
+  // control anchors beside the exercise instead of failing the overlap gate.
+  const instruction = prompt
+    .split(/\bfor online (?:reading|use) only\b/i)[0]
+    ?.match(/^.*?[.!?](?:\s|$)/)?.[0]
+    ?.trim();
+  const needle = normalizeSemanticText(instruction || prompt).toLocaleLowerCase();
   const needleWords = new Set(
     needle.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 2),
   );

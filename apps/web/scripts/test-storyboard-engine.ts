@@ -507,6 +507,41 @@ assert.equal(
   "identical response stems in separate picture questions must each keep an answer slot",
 );
 
+const numeralWords = ["two", "four", "seven", "nine", "one", "three", "six", "five", "eight"];
+const printedBoxUrls = Object.fromEntries(
+  numeralWords.map((_, index) => [`answer-box-${index}`, `blob:answer-box-${index}`]),
+);
+const printedAnswerBoxes = createGeometryStoryboardHtml(
+  {
+    number: 20,
+    width: 569,
+    height: 779,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 70, y: 85, w: 120, h: 22 }, text: "Exercise 2", font: { size: 18 } },
+      { type: "text", bbox: { x: 70, y: 120, w: 300, h: 20 }, text: "Write the following numbers in numerals." },
+      ...numeralWords.map((text, index) => ({
+        type: "text" as const,
+        bbox: { x: 95, y: 170 + index * 52, w: 70, h: 20 },
+        text,
+      })),
+    ],
+    assets: numeralWords.map((_, index) => ({
+      id: `answer-box-${index}`,
+      kind: "image" as const,
+      blob: new Blob(["box"]),
+      bounds: { x: 260, y: 160 + index * 52, w: 92, h: 38 },
+    })),
+  },
+  printedBoxUrls,
+);
+assert.equal(
+  (printedAnswerBoxes.match(/data-placement-evidence="repeated-printed-answer-box"/g) ?? []).length,
+  9,
+  "a repeated column of printed answer boxes must become aligned interactive inputs",
+);
+assert.match(printedAnswerBoxes, /data-correct-answer="2"/);
+assert.match(printedAnswerBoxes, /data-correct-answer="8"/);
+
 const workedExampleHtml = createGeometryStoryboardHtml(
   {
     number: 8,

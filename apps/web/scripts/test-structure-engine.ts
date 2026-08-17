@@ -208,6 +208,44 @@ assert.ok(
   "explicit oral-response instructions should be persisted as no-input activities",
 );
 
+const properNameRead = structurePageText(
+  5,
+  "The organisation, Room to Read, sponsored the early stages of this textbook.",
+);
+assert.equal(
+  properNameRead.activities.length,
+  0,
+  "proper names containing Read must not become receptive activities",
+);
+
+const writeNumerals = structurePageText(
+  20,
+  "Exercise 2\nWrite the following numbers in numerals.\ntwo\nfour\nseven\nnine\none\nthree\nsix\nfive\neight",
+);
+assert.equal(writeNumerals.activities.length, 1);
+assert.equal(writeNumerals.activities[0]?.answerCount, 9);
+assert.deepEqual(writeNumerals.activities[0]?.correctAnswers, [
+  "2",
+  "4",
+  "7",
+  "9",
+  "1",
+  "3",
+  "6",
+  "5",
+  "8",
+]);
+
+const visualComparison = structurePageText(
+  8,
+  "Exercise 1\nIdentify the group with few objects in each row.",
+);
+assert.equal(
+  visualComparison.activities[0]?.type,
+  "multiple-choice",
+  "visual identification should be selectable rather than a discussion response",
+);
+
 const geometryReadingGrid = structurePageText(55, "fallback", [
   {
     type: "text",

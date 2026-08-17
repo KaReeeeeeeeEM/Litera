@@ -495,6 +495,13 @@ export function createGeometryStoryboardHtml(
     pageHeight: height,
     activityPage: activityPage && !oralOnly,
   });
+  const repeatedBoxTargets = buildRepeatedAnswerBoxTargets({
+    assets: visibleAssets,
+    textBlocks: contentBlocks,
+    pageWidth: width,
+    pageHeight: height,
+    activityPage: activityPage && !oralOnly,
+  });
   const labeledItemTargets = oralOnly
     ? []
     : buildLabeledItemAnswerTargets({
@@ -580,6 +587,7 @@ export function createGeometryStoryboardHtml(
       confidence: 0.72,
       evidence: "semantically-aligned-whitespace",
     })),
+    ...repeatedBoxTargets,
     ...labeledItemTargets,
     ...proseQuestionTargets,
     ...fractionDiagramTargets,
@@ -1536,6 +1544,86 @@ function deduplicateVisualAssets(assets: ExtractedPageAsset[]) {
   );
 }
 
+function buildRepeatedAnswerBoxTargets({
+  assets,
+  textBlocks,
+  pageWidth,
+  pageHeight,
+  activityPage,
+}: {
+  assets: ExtractedPageAsset[];
+  textBlocks: ExtractedLayoutBlock[];
+  pageWidth: number;
+  pageHeight: number;
+  activityPage: boolean;
+}) {
+  const pageInstruction = textBlocks.map((block) => block.text ?? "").join(" ");
+  if (
+    !activityPage ||
+    !/\b(?:write|fill|complete|answer|andika|jaza)\b/i.test(pageInstruction)
+  )
+    return [];
+  const candidates = assets.filter(({ bounds }) => {
+    const widthRatio = bounds.w / pageWidth;
+    const heightRatio = bounds.h / pageHeight;
+    return (
+      widthRatio >= 0.08 &&
+      widthRatio <= 0.28 &&
+      heightRatio >= 0.025 &&
+      heightRatio <= 0.09 &&
+      bounds.y > pageHeight * 0.14 &&
+      bounds.y + bounds.h < pageHeight * 0.9
+    );
+  });
+  const groups = candidates.reduce<ExtractedPageAsset[][]>((output, asset) => {
+    const group = output.find((items) => {
+      const sample = items[0]!.bounds;
+      return (
+        Math.abs(sample.x - asset.bounds.x) <= pageWidth * 0.025 &&
+        Math.abs(sample.w - asset.bounds.w) <= pageWidth * 0.025 &&
+        Math.abs(sample.h - asset.bounds.h) <= pageHeight * 0.018
+      );
+    });
+    if (group) group.push(asset);
+    else output.push([asset]);
+    return output;
+  }, []);
+  const repeated = groups.sort((a, b) => b.length - a.length)[0] ?? [];
+  if (repeated.length < 3) return [];
+  const numberWords: Record<string, string> = {
+    zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5",
+    six: "6", seven: "7", eight: "8", nine: "9", ten: "10",
+  };
+  return [...repeated]
+    .sort((a, b) => a.bounds.y - b.bounds.y)
+    .map((asset) => {
+      const label = textBlocks
+        .filter((block) => {
+          const centerY = block.bbox.y + block.bbox.h / 2;
+          return (
+            block.bbox.x + block.bbox.w <= asset.bounds.x + pageWidth * 0.04 &&
+            Math.abs(centerY - (asset.bounds.y + asset.bounds.h / 2)) <=
+              Math.max(asset.bounds.h, pageHeight * 0.025)
+          );
+        })
+        .sort(
+          (a, b) =>
+            asset.bounds.x - (a.bbox.x + a.bbox.w) -
+            (asset.bounds.x - (b.bbox.x + b.bbox.w)),
+        )[0]?.text
+        ?.trim()
+        .toLocaleLowerCase();
+      return {
+        type: "image" as const,
+        text: label,
+        confidence: 0.94,
+        evidence: "repeated-printed-answer-box",
+        correctAnswer: label ? numberWords[label] : undefined,
+        bbox: { ...asset.bounds },
+      };
+    });
+}
+
 function buildNumberedVisualAnswerTargets({
   assets,
   textBlocks,
@@ -1866,6 +1954,7 @@ function validateAnswerTargets<
     // abstain when they collide with meaningful artwork.
     const pictureCollision =
       target.evidence !== "printed-writing-rule" &&
+      target.evidence !== "repeated-printed-answer-box" &&
       assets.some((asset) => {
         // Page panels, watermarks, and broad composed backgrounds are not
         // figures. Protect bounded visual objects while ignoring those
