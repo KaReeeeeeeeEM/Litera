@@ -150,7 +150,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     const response = await providerFetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${keys.openai}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.4", max_output_tokens: 3000, input: [{ role: "user", content }] }),
+      body: JSON.stringify({ model: "gpt-4.1-mini", max_output_tokens: 2200, input: [{ role: "user", content }] }),
       signal,
     });
     const payload = await readProviderResponseJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } }>(response, "OpenAI");
@@ -166,10 +166,10 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
         { inlineData: { mimeType: asset.blob.type || "image/png", data: asset.dataUrl.split(",")[1] ?? "" } },
       ]),
     ];
-    const response = await providerFetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent", {
+    const response = await providerFetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": keys.gemini },
-      body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" } }),
+      body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 2200, responseMimeType: "application/json" } }),
       signal,
     });
     const payload = await readProviderResponseJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } }>(response, "Gemini");
@@ -188,7 +188,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     const response = await providerFetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": keys.anthropic },
-      body: JSON.stringify({ model: "claude-3-5-sonnet-latest", max_tokens: 3000, temperature: 0.1, messages: [{ role: "user", content }] }),
+      body: JSON.stringify({ model: "claude-3-5-haiku-latest", max_tokens: 2200, temperature: 0.1, messages: [{ role: "user", content }] }),
       signal,
     });
     const payload = await readProviderResponseJson<{ content?: Array<{ type: string; text?: string }>; error?: { message?: string } }>(response, "Anthropic");

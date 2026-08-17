@@ -921,27 +921,44 @@ function StagePage({
           },
         };
         await onChange(working, "Started Captioning");
-        const captionConcurrency = working.performanceMode === "maximum" ? 3 : 2;
+        const captionConcurrency =
+          working.performanceMode === "eco"
+            ? 2
+            : working.performanceMode === "maximum"
+              ? 8
+              : 4;
+        // Persisting a book clones its Blob-backed assets. Checkpoint several
+        // completed pages together so captioning does not spend most of its
+        // time repeatedly writing the same large book record.
+        const captionCheckpointSize = captionConcurrency * 2;
         let fallbackCaptionCount = 0;
-        for (let index = 0; index < pages.length; index += captionConcurrency) {
-          const batch = pages.slice(index, index + captionConcurrency);
-          const results = await Promise.all(
-            batch.map(async (page) => {
+        for (let index = 0; index < pages.length; index += captionCheckpointSize) {
+          const batch = pages.slice(index, index + captionCheckpointSize);
+          const results = await mapWithConcurrency(
+            batch,
+            captionConcurrency,
+            async (page) => {
               const storedPage = book.extractedPages?.find(
                 (candidate) => candidate.number === page.pageNumber,
               );
               if (!storedPage) return { page, captions: [] };
-              const extractedPage = await ensurePageGeometry(book, storedPage);
-              const thumbnail = await readablePageImage(book, extractedPage);
-              const assets = await ensurePageAssets(book, {
-                ...extractedPage,
-                thumbnail,
-              });
+              const [extractedPage, thumbnail] = await Promise.all([
+                ensurePageGeometry(book, storedPage),
+                readablePageImage(book, storedPage),
+              ]);
               const requestedIds = new Set(
                 page.blocks
                   .filter((block) => block.kind === "image" && block.assetId)
                   .map((block) => block.assetId!),
               );
+              const savedAssets = storedPage.assets ?? [];
+              const savedIds = new Set(savedAssets.map((asset) => asset.id));
+              const assets = [...requestedIds].every((id) => savedIds.has(id))
+                ? savedAssets
+                : await ensurePageAssets(book, {
+                    ...extractedPage,
+                    thumbnail,
+                  });
               const captionAssets = assets.filter(
                 (asset) =>
                   isMeaningfulStoryboardAsset(asset) &&
@@ -979,7 +996,8 @@ function StagePage({
                 fallbackCaptionCount += captions.length;
               }
               return { page, captions };
-            }),
+            },
+            controller.signal,
           );
           for (const { page, captions } of results) {
           const captionedPage = applyImageCaptions(page, captions);
@@ -1013,11 +1031,11 @@ function StagePage({
               ),
             },
           };
+          }
           await onChange(
             working,
-            `Captioned visuals on page ${page.pageNumber}`,
+            `Captioned visuals through page ${results.at(-1)?.page.pageNumber ?? index + 1}`,
           );
-          }
         }
         working = {
           ...working,
@@ -1349,14 +1367,17 @@ function StagePage({
         );
         const speechConcurrency =
           book.performanceMode === "eco"
-            ? 8
+            ? 4
             : book.performanceMode === "maximum"
-              ? 32
-              : 24;
-        for (let index = 0; index < pending.length; index += speechConcurrency) {
-          const batch = pending.slice(index, index + speechConcurrency);
-          const generated = await Promise.all(
-            batch.map(async ({ catalog, entry }) => {
+              ? provider === "gemini" ? 12 : 20
+              : provider === "gemini" ? 6 : 12;
+        const speechCheckpointSize = speechConcurrency * 4;
+        for (let index = 0; index < pending.length; index += speechCheckpointSize) {
+          const batch = pending.slice(index, index + speechCheckpointSize);
+          const generated = await mapWithConcurrency(
+            batch,
+            speechConcurrency,
+            async ({ catalog, entry }) => {
               controller.signal.throwIfAborted();
               return synthesizeCatalogEntry({
                 entry,
@@ -1367,7 +1388,8 @@ function StagePage({
                 speed: requestedSpeed,
                 signal: controller.signal,
               });
-            }),
+            },
+            controller.signal,
           );
             controller.signal.throwIfAborted();
             const speechEntries = [
@@ -5186,6 +5208,30 @@ async function processWithBoundedConcurrency<T>(
     await Promise.allSettled(executing);
     throw error;
   }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    async () => {
+      while (true) {
+        signal?.throwIfAborted();
+        const index = cursor;
+        cursor += 1;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index]!, index);
+      }
+    },
+  );
+  await Promise.all(runners);
+  return results;
 }
 function abortableUiDelay(milliseconds: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
