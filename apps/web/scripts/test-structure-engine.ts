@@ -246,6 +246,17 @@ assert.equal(
   "visual identification should be selectable rather than a discussion response",
 );
 
+const missingNumberGrid = structurePageText(
+  22,
+  "Exercise 5\nFill in the missing numbers in a row.\n1\n3\n4\n5\n7\n9",
+);
+assert.equal(
+  missingNumberGrid.activities.length,
+  1,
+  "a fill instruction must remain an activity even when PDF answer rules are graphical rather than extracted text",
+);
+assert.equal(missingNumberGrid.activities[0]?.type, "fill-blank");
+
 const geometryReadingGrid = structurePageText(55, "fallback", [
   {
     type: "text",

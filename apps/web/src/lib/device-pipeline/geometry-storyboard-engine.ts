@@ -403,7 +403,7 @@ export function createGeometryStoryboardHtml(
   // Litera keeps printed answer rules as real form controls. Thin source rules in
   // exercise regions become positioned inputs, preserving both the visual line
   // and a keyboard-accessible place to answer.
-  const graphicalAnswerBlocks = (page.layoutBlocks ?? []).filter((block) => {
+  const graphicalAnswerCandidates = (page.layoutBlocks ?? []).filter((block) => {
     const widthRatio = block.bbox.w / width;
     const heightRatio = block.bbox.h / height;
     const promptAbove = contentBlocks.some(
@@ -462,6 +462,13 @@ export function createGeometryStoryboardHtml(
       (promptAbove || stackedArithmeticAbove)
     );
   });
+  const graphicalAnswerBlocks = suppressTableGridRules(
+    graphicalAnswerCandidates,
+    visibleAssets,
+    contentBlocks,
+    width,
+    height,
+  );
   const textualAnswerTargets = textualAnswerBlocks.flatMap((block) => {
     const value = block.text ?? "";
     const matches = answerRuleMatches(value);
@@ -577,9 +584,12 @@ export function createGeometryStoryboardHtml(
     width,
     height,
   );
+  const illustratedEquationTable =
+    graphicalAnswerBlocks.length >= 2 &&
+    contentBlocks.some((block) => /^(?:add|equals|[+=])$/i.test(block.text?.trim() ?? ""));
   const rawAnswerTargets = [
     ...textualAnswerTargets,
-    ...(oralOnly || stackedCellTargets.length >= 4
+    ...(oralOnly || repeatedBoxTargets.length > 0 || stackedCellTargets.length >= 4
       ? []
       : graphicalAnswerBlocks.map((block) => ({
           ...block,
@@ -587,16 +597,16 @@ export function createGeometryStoryboardHtml(
           confidence: 0.9,
           evidence: "printed-writing-rule",
         }))),
-    ...numberedVisualTargets.map((target) => ({
+    ...(illustratedEquationTable ? [] : numberedVisualTargets.map((target) => ({
       ...target,
       confidence: 0.72,
       evidence: "semantically-aligned-whitespace",
-    })),
+    }))),
     ...repeatedBoxTargets,
     ...labeledItemTargets,
-    ...proseQuestionTargets,
+    ...(illustratedEquationTable ? [] : proseQuestionTargets),
     ...fractionDiagramTargets,
-    ...equationAnswerTargets,
+    ...(illustratedEquationTable ? [] : equationAnswerTargets),
     ...stackedCellTargets,
   ];
   const answerTargets = validateAnswerTargets(
@@ -1582,15 +1592,21 @@ function buildRepeatedAnswerBoxTargets({
     !/\b(?:write|fill|complete|answer|andika|jaza)\b/i.test(pageInstruction)
   )
     return [];
+  const lastActivityHeading = textBlocks
+    .filter((block) => activityHeadingPattern.test(block.text?.trim() ?? ""))
+    .sort((a, b) => b.bbox.y - a.bbox.y)[0];
+  const activityStart = lastActivityHeading
+    ? lastActivityHeading.bbox.y + lastActivityHeading.bbox.h
+    : pageHeight * 0.14;
   const candidates = assets.filter(({ bounds }) => {
     const widthRatio = bounds.w / pageWidth;
     const heightRatio = bounds.h / pageHeight;
     return (
-      widthRatio >= 0.08 &&
+      widthRatio >= 0.05 &&
       widthRatio <= 0.28 &&
       heightRatio >= 0.025 &&
       heightRatio <= 0.09 &&
-      bounds.y > pageHeight * 0.14 &&
+      bounds.y > Math.max(pageHeight * 0.14, activityStart) &&
       bounds.y + bounds.h < pageHeight * 0.9
     );
   });
@@ -1598,7 +1614,6 @@ function buildRepeatedAnswerBoxTargets({
     const group = output.find((items) => {
       const sample = items[0]!.bounds;
       return (
-        Math.abs(sample.x - asset.bounds.x) <= pageWidth * 0.025 &&
         Math.abs(sample.w - asset.bounds.w) <= pageWidth * 0.025 &&
         Math.abs(sample.h - asset.bounds.h) <= pageHeight * 0.018
       );
@@ -1641,6 +1656,96 @@ function buildRepeatedAnswerBoxTargets({
         bbox: { ...asset.bounds },
       };
     });
+}
+
+export function suppressTableGridRules(
+  candidates: ExtractedLayoutBlock[],
+  assets: ExtractedPageAsset[],
+  textBlocks: ExtractedLayoutBlock[],
+  pageWidth: number,
+  pageHeight: number,
+) {
+  const remaining = new Set(candidates);
+  const rows: ExtractedLayoutBlock[][] = [];
+  for (const candidate of candidates) {
+    const row = rows.find(
+      (items) =>
+        Math.abs(items[0]!.bbox.y - candidate.bbox.y) <= pageHeight * 0.012,
+    );
+    if (row) row.push(candidate);
+    else rows.push([candidate]);
+  }
+  for (const row of rows) {
+    if (row.length < 4) continue;
+    const byWidth = [...row].sort((a, b) => a.bbox.w - b.bbox.w);
+    let split = -1;
+    let largestGap = 1;
+    for (let index = 0; index < byWidth.length - 1; index += 1) {
+      const ratio = byWidth[index + 1]!.bbox.w / Math.max(1, byWidth[index]!.bbox.w);
+      if (ratio > largestGap) {
+        largestGap = ratio;
+        split = index;
+      }
+    }
+    // Exercise tables often expose both their long cell borders and shorter
+    // printed answer rules as thin PDF image blocks. Keep the short cluster
+    // only when the source geometry contains a clear size separation.
+    if (split >= 1 && largestGap >= 1.35) {
+      const likelyAnswers = new Set(byWidth.slice(0, split + 1));
+      row.forEach((candidate) => {
+        if (!likelyAnswers.has(candidate)) remaining.delete(candidate);
+      });
+    }
+  }
+  const geometric = candidates.filter((candidate) => remaining.has(candidate));
+  if (geometric.length < 4) return geometric;
+  const nonOperatorColumns = geometric.filter((rule) => {
+    const centerX = rule.bbox.x + rule.bbox.w / 2;
+    return !textBlocks.some((block) => {
+      const text = block.text?.trim() ?? "";
+      const textCenterX = block.bbox.x + block.bbox.w / 2;
+      return (
+        /^(?:add|equals|[+=])$/i.test(text) &&
+        block.bbox.y < rule.bbox.y &&
+        rule.bbox.y - (block.bbox.y + block.bbox.h) <= pageHeight * 0.22 &&
+        Math.abs(textCenterX - centerX) <=
+          Math.max(rule.bbox.w * 0.42, pageWidth * 0.025)
+      );
+    });
+  });
+  if (
+    nonOperatorColumns.length >= 2 &&
+    nonOperatorColumns.length <= 4 &&
+    nonOperatorColumns.length < geometric.length
+  )
+    return nonOperatorColumns;
+  const lastActivityHeading = textBlocks
+    .filter((block) => activityHeadingPattern.test(block.text?.trim() ?? ""))
+    .sort((a, b) => b.bbox.y - a.bbox.y)[0];
+  const activityTop = lastActivityHeading?.bbox.y ?? 0;
+  const imageBacked = geometric.filter((rule) => {
+    const centerX = rule.bbox.x + rule.bbox.w / 2;
+    return assets.some((asset) => {
+      const areaRatio =
+        (asset.bounds.w * asset.bounds.h) / (pageWidth * pageHeight);
+      return (
+        areaRatio >= 0.001 &&
+        areaRatio < 0.16 &&
+        asset.bounds.y >= activityTop &&
+        asset.bounds.y + asset.bounds.h <= rule.bbox.y + pageHeight * 0.01 &&
+        rule.bbox.y - (asset.bounds.y + asset.bounds.h) <= pageHeight * 0.22 &&
+        centerX >= asset.bounds.x - pageWidth * 0.025 &&
+        centerX <= asset.bounds.x + asset.bounds.w + pageWidth * 0.025
+      );
+    });
+  });
+  // In illustrated arithmetic tables, operands and the result have pictures
+  // above their answer boxes; operator/grid columns do not. This relationship
+  // is more reliable than treating every extracted horizontal cell edge as an
+  // answer rule.
+  return imageBacked.length >= 2 && imageBacked.length <= 4
+    ? imageBacked
+    : geometric;
 }
 
 function buildNumberedVisualAnswerTargets({

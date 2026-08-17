@@ -11,7 +11,7 @@ import {
   storyboardImagesAreReferenced,
   storyboardPaletteIsSafe,
 } from "../src/lib/device-pipeline/ai-storyboard-engine";
-import { createGeometryStoryboardHtml } from "../src/lib/device-pipeline/geometry-storyboard-engine";
+import { createGeometryStoryboardHtml, suppressTableGridRules } from "../src/lib/device-pipeline/geometry-storyboard-engine";
 import { uniqueStoryboardSources } from "../src/lib/device-pipeline/storyboard-run-policy";
 import {
   inferCorrectAnswers,
@@ -73,6 +73,46 @@ const continuationHtml = createGeometryStoryboardHtml(
   {},
 );
 assert.equal((continuationHtml.match(/<div class="dense-question">/g) ?? []).length, 6, "page-scale panels must not suppress answer slots for numbered prose questions");
+
+const horizontalAdditionHtml = createGeometryStoryboardHtml(
+  {
+    number: 30,
+    width: 569,
+    height: 779,
+    layoutBlocks: [
+      { type: "text", text: "Example 1", bbox: { x: 90, y: 175, w: 90, h: 20 }, font: { size: 14 } },
+      { type: "text", text: "Exercise 2", bbox: { x: 90, y: 475, w: 90, h: 20 }, font: { size: 14 } },
+      { type: "text", text: "Count the objects and write the total number in the space provided.", bbox: { x: 90, y: 505, w: 410, h: 38 }, font: { size: 12 } },
+    ],
+    assets: [
+      { id: "example-answer-box", kind: "image", blob: new Blob(), bounds: { x: 135, y: 310, w: 42, h: 24 } },
+      { id: "activity-answer-box-1", kind: "image", blob: new Blob(), bounds: { x: 135, y: 658, w: 42, h: 24 } },
+      { id: "activity-answer-box-2", kind: "image", blob: new Blob(), bounds: { x: 305, y: 658, w: 42, h: 24 } },
+      { id: "activity-answer-box-3", kind: "image", blob: new Blob(), bounds: { x: 460, y: 658, w: 42, h: 24 } },
+    ],
+  },
+  {},
+);
+assert.equal(
+  (horizontalAdditionHtml.match(/data-placement-evidence="repeated-printed-answer-box"/g) ?? []).length,
+  3,
+  "horizontal exercise answer boxes must become inputs while worked-example boxes remain static",
+);
+assert.equal(
+  (horizontalAdditionHtml.match(/data-question-response=/g) ?? []).length,
+  3,
+  "reliable printed boxes must suppress overlapping generic answer-line fallbacks",
+);
+
+const tableRules = [
+  ...[110, 280, 445].map((x) => ({ type: "image" as const, bbox: { x, y: 650, w: 40, h: 3 } })),
+  ...[80, 190, 300, 410].map((x) => ({ type: "image" as const, bbox: { x, y: 650, w: 95, h: 3 } })),
+];
+assert.equal(
+  suppressTableGridRules(tableRules, [], [], 569, 779).length,
+  3,
+  "short answer rules must be separated from longer table-cell borders on the same row",
+);
 
 assert.match(
   renderMathInText("3/4 + 1/4 = ?"),

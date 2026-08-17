@@ -359,7 +359,7 @@ function boundsForBlocks(blocks: ExtractedLayoutBlock[]) {
 }
 
 function activityType(text: string): ActivityType {
-  if (/((?:[_–—-]\s*){3,}|fill (?:in )?the blank|jaza nafasi)/i.test(text))
+  if (/((?:[_–—-]\s*){3,}|fill (?:in )?(?:the )?(?:blank|missing)|jaza nafasi)/i.test(text))
     return "fill-blank";
   if (/(match|oanisha|linganisha)/i.test(text)) return "matching";
   if (/(true or false|kweli au si kweli)/i.test(text)) return "true-false";
@@ -562,7 +562,7 @@ export function detectActivities(
     .filter(Boolean);
   const activityHeading = activityHeadingPattern;
   const imperative =
-    /^(?:\d+[.)]\s*)?(?:answer|write|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
+    /^(?:\d+[.)]\s*)?(?:answer|write|fill|complete|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
   const itemStart = /^(?:\d+[.)]|\([a-z]\)|[a-z][.)])\s+/i;
   const exampleHeading = /^(?:mfano|example)(?:\s+(?:wa\s+)?\d+)?\b/i;
   const oralInstruction =
@@ -576,7 +576,7 @@ export function detectActivities(
   const candidates: string[] = [];
   const responsePrompt = (value: string) =>
     !isMetadataIdentifier(value) &&
-    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:answer|write|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
+    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:answer|write|fill|complete|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
   const flush = () => {
     const prompt = current.replace(/\s+/g, " ").trim();
     const readOnlyInstruction =
