@@ -20,7 +20,7 @@ export async function readBooks() {
   const database = await openDeviceDatabase();
   return new Promise<DeviceBook[]>((resolve, reject) => {
     const request = database.transaction(booksStore, "readonly").objectStore(booksStore).getAll();
-    request.onsuccess = () => resolve((request.result as DeviceBook[]).sort((a, b) => (b.modifiedAt ?? b.addedAt).localeCompare(a.modifiedAt ?? a.addedAt)));
+    request.onsuccess = () => resolve((request.result as DeviceBook[]).sort((a, b) => b.addedAt.localeCompare(a.addedAt)));
     request.onerror = () => reject(request.error);
   }).finally(() => database.close());
 }

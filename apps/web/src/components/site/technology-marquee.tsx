@@ -8,6 +8,7 @@ const technologies = [
   { name: "Better Auth", logo: "/technologies/better-auth.svg" },
   { name: "PostgreSQL", logo: "/technologies/postgresql.svg" },
   { name: "Drizzle", logo: "/technologies/drizzle.svg" },
+  { name: "DevCanon", logo: "/technologies/devcanon.svg" },
 ];
 
 export function TechnologyMarquee() {

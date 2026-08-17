@@ -5,6 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { FeedbackFab } from "@/components/feedback/feedback-fab";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { CustomCursor } from "@/components/custom-cursor";
 
 import "./globals.css";
 
@@ -89,6 +90,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-full antialiased">
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData).replace(/</g, "\\u003c") }} />
         <ThemeProvider>
+          <CustomCursor />
           <TooltipProvider>{children}</TooltipProvider>
           <FeedbackFab />
           <Toaster position="top-right" richColors />

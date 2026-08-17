@@ -4,7 +4,19 @@
   "description": "Default capability for the Litera desktop window",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://litera.almareem.com/*", "https://litera-tau.vercel.app/*"]
+    "urls": ["http://localhost:3000/*", "https://litera.almareem.com/*", "https://litera-tau.vercel.app/*"]
   },
-  "permissions": ["core:default", "process:allow-restart", "updater:default"]
+  "permissions": [
+    "core:default",
+    "process:allow-restart",
+    "updater:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://api.openai.com/*" },
+        { "url": "https://generativelanguage.googleapis.com/*" },
+        { "url": "https://api.anthropic.com/*" }
+      ]
+    }
+  ]
 }

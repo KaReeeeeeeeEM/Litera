@@ -2,7 +2,7 @@
 
 import { useState, useSyncExternalStore } from "react";
 import { Download, LoaderCircle, RefreshCw } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/feedback";
 
 import { Button } from "@/components/ui/button";
 
@@ -30,7 +30,7 @@ export function DesktopUpdateControl() {
 
       toast.info(`Litera Desktop ${update.version} is ready. Downloading the signed update…`);
       await update.downloadAndInstall((event) => {
-        if (event.event === "Finished") toast.success("Update installed. Litera will restart now.");
+        if (event.event === "Finished") toast.complete("Update installed. Litera will restart now.");
       });
       await relaunch();
     } catch (error) {

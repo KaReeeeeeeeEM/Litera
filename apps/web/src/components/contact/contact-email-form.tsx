@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { LoaderCircle, Send } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/feedback";
 
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";

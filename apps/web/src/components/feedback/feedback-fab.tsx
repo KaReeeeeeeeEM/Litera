@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { Accessibility, ArrowLeft, ArrowRight, Bug, Check, Heart, ImagePlus, Lightbulb, LoaderCircle, MessageSquareText, Send, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { Accessibility, ArrowLeft, ArrowRight, Bug, Check, GitBranch, Heart, ImagePlus, Lightbulb, LoaderCircle, Mail, MessageSquareText, Send, Trash2 } from "lucide-react";
+import { toast } from "@/lib/feedback";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -22,12 +22,12 @@ const categories = [
 ] as const;
 
 type Category = (typeof categories)[number]["value"];
-type FeedbackDraft = { category: Category | ""; title: string; description: string; email: string };
+type FeedbackDraft = { category: Category | ""; route: "email" | "github" | ""; title: string; description: string; email: string };
 type Position = { x: number; y: number } | null;
 type ScreenshotAttachment = { file: File; previewUrl: string };
 
-const initialDraft: FeedbackDraft = { category: "", title: "", description: "", email: "" };
-const stepLabels = ["Kind of feedback", "Tell us more", "Add screenshots", "Review and send"];
+const initialDraft: FeedbackDraft = { category: "", route: "", title: "", description: "", email: "" };
+const stepLabels = ["Kind of feedback", "Choose destination", "Tell us more", "Add screenshots", "Review and send"];
 
 export function FeedbackFab() {
   const [open, setOpen] = useState(false);
@@ -94,9 +94,10 @@ export function FeedbackFab() {
 
   function validateStep() {
     if (step === 0 && !draft.category) return "Choose the kind of feedback you want to share.";
-    if (step === 1 && draft.title.trim().length < 3) return "Add a short title with at least 3 characters.";
-    if (step === 1 && draft.description.trim().length < 10) return "Add a little more detail so we can understand the feedback.";
-    if (step === 1 && draft.email && !/^\S+@\S+\.\S+$/.test(draft.email)) return "Enter a valid email address or leave it blank.";
+    if (step === 1 && !draft.route) return "Choose whether to create a GitHub issue or email the Litera team.";
+    if (step === 2 && draft.title.trim().length < 3) return "Add a short title with at least 3 characters.";
+    if (step === 2 && draft.description.trim().length < 10) return "Add a little more detail so we can understand the feedback.";
+    if (step === 2 && draft.email && !/^\S+@\S+\.\S+$/.test(draft.email)) return "Enter a valid email address or leave it blank.";
     return "";
   }
 
@@ -191,7 +192,7 @@ export function FeedbackFab() {
             </div>
             <Progress aria-label={`Feedback progress: step ${step + 1} of ${stepLabels.length}`} value={((step + 1) / stepLabels.length) * 100} />
             <DialogTitle className="pt-2 text-xl">{stepLabels[step]}</DialogTitle>
-            <DialogDescription>{step === 0 ? "Your perspective helps us make Litera calmer, clearer, and more inclusive." : step === 1 ? "Share enough context for the team to understand and reproduce your experience." : step === 2 ? "Screenshots are optional, but they can help us see exactly what you saw." : "Check everything before your feedback is sent to the Litera team."}</DialogDescription>
+            <DialogDescription>{step === 0 ? "Your perspective helps us make Litera calmer, clearer, and more inclusive." : step === 1 ? "Send privately to the team or file a trackable public GitHub issue." : step === 2 ? "Share enough context for the team to understand and reproduce your experience." : step === 3 ? "Screenshots are optional, but they can help us see exactly what you saw." : "Check everything before sending."}</DialogDescription>
           </DialogHeader>
 
           <div className="py-1">
@@ -209,7 +210,9 @@ export function FeedbackFab() {
               </FieldSet>
             ) : null}
 
-            {step === 1 ? (
+            {step === 1 ? <ToggleGroup className="grid w-full gap-3 sm:grid-cols-2" onValueChange={value => value && setDraft(current => ({ ...current, route: value as FeedbackDraft["route"] }))} type="single" value={draft.route} variant="outline"><ToggleGroupItem className="h-auto min-h-24 justify-start gap-4 p-5 text-left hover:border-primary/30 data-[state=on]:border-primary/30 data-[state=on]:bg-primary/5" value="email"><Mail/><span><strong className="block">Email the Litera team</strong><span className="mt-1 block font-normal text-muted-foreground">A private message sent directly to the support inbox.</span></span></ToggleGroupItem><ToggleGroupItem className="h-auto min-h-24 justify-start gap-4 p-5 text-left hover:border-primary/30 data-[state=on]:border-primary/30 data-[state=on]:bg-primary/5" value="github"><GitBranch/><span><strong className="block">Create a GitHub issue</strong><span className="mt-1 block font-normal text-muted-foreground">A public, trackable report in the Litera repository.</span></span></ToggleGroupItem></ToggleGroup> : null}
+
+            {step === 2 ? (
               <FieldGroup>
                 <Field data-invalid={Boolean(error && draft.title.trim().length < 3)}>
                   <FieldLabel htmlFor="feedback-title">Short title</FieldLabel>
@@ -228,7 +231,7 @@ export function FeedbackFab() {
               </FieldGroup>
             ) : null}
 
-            {step === 2 ? (
+            {step === 3 ? (
               <FieldGroup>
                 <Field>
                   <FieldLabel className="w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-colors hover:border-primary/30 hover:bg-primary/5" htmlFor="feedback-screenshots">
@@ -240,11 +243,11 @@ export function FeedbackFab() {
               </FieldGroup>
             ) : null}
 
-            {step === 3 ? (
+            {step === 4 ? (
               <div className="flex flex-col gap-4">
                 <div className="rounded-xl border bg-muted/30 p-5"><div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">{selectedCategory ? <selectedCategory.icon className="size-4" /> : null}</span><div><p className="font-semibold">{selectedCategory?.label}</p><p className="text-sm text-muted-foreground">{draft.title}</p></div></div></div>
                 <div className="rounded-xl border p-5"><p className="whitespace-pre-wrap text-sm leading-7">{draft.description}</p></div>
-                <div className="grid gap-3 text-sm sm:grid-cols-2"><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Follow-up</p><p className="mt-2 truncate">{draft.email || "No email provided"}</p></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Attachments</p><p className="mt-2">{screenshots.length ? `${screenshots.length} screenshot${screenshots.length === 1 ? "" : "s"}` : "None"}</p></div></div>
+                <div className="grid gap-3 text-sm sm:grid-cols-3"><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Destination</p><p className="mt-2">{draft.route === "github" ? "GitHub issue" : "Team email"}</p></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Follow-up</p><p className="mt-2 truncate">{draft.email || "No email provided"}</p></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Attachments</p><p className="mt-2">{screenshots.length ? `${screenshots.length} screenshot${screenshots.length === 1 ? "" : "s"}` : "None"}</p></div></div>
                 <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><Check className="mt-0.5 size-3.5 shrink-0 text-primary" />The current page address will be included automatically to help the team understand the context.</p>
               </div>
             ) : null}

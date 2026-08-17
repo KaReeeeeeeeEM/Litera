@@ -2,7 +2,7 @@
 
 import { CheckCircle2, Download, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/feedback";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
