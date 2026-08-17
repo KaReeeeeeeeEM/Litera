@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
 import { translateCatalog } from "../src/lib/device-pipeline/language-engine";
+import { parseProviderJson } from "../src/lib/device-pipeline/provider-json";
+
+assert.deepEqual(
+  parseProviderJson<{ translations: string[] }>(
+    'Here is the result: ```json\n{translations:["Moja","Mbili",],}\n```',
+  ).translations,
+  ["Moja", "Mbili"],
+  "provider JSON parsing must tolerate fences, prose, unquoted keys, and trailing commas",
+);
 
 const keys = { openai: "", gemini: "test", anthropic: "", azure: "", azureEndpoint: "", azureDeployment: "", custom: "", customEndpoint: "" };
 const source = [

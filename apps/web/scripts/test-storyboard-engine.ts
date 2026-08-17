@@ -206,6 +206,32 @@ const denseHtml = createGeometryStoryboardHtml(
   { number: 7, width: 500, height: 700, layoutBlocks: denseBlocks },
   {},
 );
+assert.match(
+  denseHtml,
+  /class="source-folio source-folio--digital"[^>]*>7<\/span>/,
+  "pages without a printed folio must still receive a visible digital page number",
+);
+
+const tocLeaderHtml = createGeometryStoryboardHtml(
+  {
+    number: 3,
+    width: 500,
+    height: 700,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 55, y: 55, w: 390, h: 36 }, text: "Yaliyomo", font: { size: 26, weight: "bold", color: "#176b3a" } },
+      { type: "text", bbox: { x: 60, y: 130, w: 380, h: 20 }, text: "Sura ya Kwanza ............ 9", font: { size: 12 } },
+      { type: "text", bbox: { x: 60, y: 165, w: 380, h: 20 }, text: "Sura ya Pili .............. 18", font: { size: 12 } },
+    ],
+  },
+  {},
+  {
+    digitalPageNumber: 3,
+    tocTitle: "Yaliyomo",
+    tocEntries: [{ title: "Sura ya Kwanza ............ 9", pageNumber: 11, level: 1 }],
+  },
+);
+assert.match(tocLeaderHtml, />Sura ya Kwanza<\/span>/, "printed dot leaders and obsolete source folios must not become part of a TOC title");
+assert.doesNotMatch(tocLeaderHtml, /Sura ya Kwanza \.{2,}/);
 assert.equal(
   (denseHtml.match(/data-layout-block=/g) ?? []).length,
   denseBlocks.length,

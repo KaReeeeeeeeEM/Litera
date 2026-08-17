@@ -1,4 +1,5 @@
 import type { ProviderKeys, ProviderId } from "@/components/device/provider-vault";
+import { parseProviderJson } from "@/lib/device-pipeline/provider-json";
 
 export type AiStoryboardResult = { html: string; model: string; provider: ProviderId; fingerprint: string };
 export type AiStoryboardAsset = { id: string; blob: Blob; bounds: { x: number; y: number; w: number; h: number } };
@@ -197,11 +198,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
 }
 
 function parseCaptionPayload(raw: string): AiImageCaption[] {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw;
-  const start = fenced.indexOf("{");
-  const end = fenced.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("The vision provider returned invalid caption data.");
-  const value = JSON.parse(fenced.slice(start, end + 1)) as { captions?: unknown };
+  const value = parseProviderJson<{ captions?: unknown }>(raw);
   if (!Array.isArray(value.captions)) throw new Error("The vision provider returned invalid caption data.");
   return value.captions.flatMap((item) => {
     if (!item || typeof item !== "object") return [];

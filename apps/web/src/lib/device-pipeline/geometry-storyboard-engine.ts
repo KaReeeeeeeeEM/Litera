@@ -369,7 +369,13 @@ export function createGeometryStoryboardHtml(
       // Use the measured source bounds. Expanding illustrations into inferred
       // grid cells changed their size and whitespace and made the digital page
       // visibly different from the printed page.
-      const { x, y, w, h } = asset.bounds;
+      // PDF image matrices can extend beyond the trim box. Clamp every visual
+      // to the source page before converting it to percentages so Windows and
+      // WebKit do not disagree about negative/overflowing positioned boxes.
+      const x = Math.max(0, Math.min(width, asset.bounds.x));
+      const y = Math.max(0, Math.min(height, asset.bounds.y));
+      const w = Math.max(1, Math.min(asset.bounds.w, width - x));
+      const h = Math.max(1, Math.min(asset.bounds.h, height - y));
       const decorative =
         ((x <= width * 0.045 || x + w >= width * 0.955) &&
           ((w <= width * 0.16 && h >= height * 0.35) ||
@@ -1435,11 +1441,14 @@ function renderTableOfContents(
   const headingCenter = heading ? heading.bbox.x + heading.bbox.w / 2 : pageWidth / 2;
   const align = headingCenter < pageWidth * .4 ? "left" : headingCenter > pageWidth * .6 ? "right" : "center";
   const titleSize = Math.max(2, ((heading?.font?.size ?? 22) / pageWidth) * 100);
+  const titleColor = safeColor(heading?.font?.color ?? "#171717");
   const rowSizes = rows.map((block) => block.font?.size).filter((size): size is number => Boolean(size));
   const rowSize = Math.max(1.2, ((rowSizes.sort((a,b) => a-b)[Math.floor(rowSizes.length / 2)] ?? 12) / pageWidth) * 100);
+  const rowColor = safeColor(rows.find((block) => block.font?.color)?.font?.color ?? "#252525");
   const usesLeaders = blocks.some((block) => /\.{3,}/.test(block.text ?? ""));
   const navStyle = `left:${percent(left,pageWidth)}%;top:${percent(top,pageHeight)}%;width:${boundedPercent(left,right-left,pageWidth)}%;height:${boundedPercent(top,bottom-top,pageHeight)}%`;
-  return `<nav class="digital-toc" style="${navStyle}" aria-labelledby="digital-toc-title"><h1 id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${Math.max(.7,rowSize * .7).toFixed(2)}cqw">${entries.map((entry) => `<li data-level="${entry.level}" style="gap:${Math.max(.45,rowSize*.35).toFixed(2)}cqw;font-size:${rowSize.toFixed(2)}cqw;padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title)}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`).join("")}</ol></nav>`;
+  const rowGap = Math.max(.35, Math.min(rowSize * .7, ((bottom - top) / pageHeight * 100 - titleSize * 2.2) / Math.max(1, entries.length) - rowSize * 1.25));
+  return `<nav class="digital-toc" style="${navStyle};color:${rowColor}" aria-labelledby="digital-toc-title"><h1 id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;color:${titleColor};font-weight:${heading?.font?.weight ?? 700};margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${rowGap.toFixed(2)}cqw">${entries.map((entry) => `<li data-level="${entry.level}" style="gap:${Math.max(.45,rowSize*.35).toFixed(2)}cqw;font-size:${rowSize.toFixed(2)}cqw;padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title.replace(/\s*\.{2,}\s*\d{1,4}\s*$/, ""))}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`).join("")}</ol></nav>`;
 }
 
 function renderSourceFolio(
@@ -1452,7 +1461,10 @@ function renderSourceFolio(
   const source = (page.layoutBlocks ?? [])
     .filter((block) => block.type === "text" && block.bbox.y >= pageHeight * .86 && /^(?:page\s+)?(?:\d{1,4}|[ivxlcdm]+)(?:\s+of\s+\d{1,4})?$/i.test(block.text?.trim() ?? ""))
     .sort((a,b) => b.bbox.y - a.bbox.y)[0];
-  if (!source) return `<span class="sr-only">Digital page ${digital}</span>`;
+  if (!source) {
+    const side = digital % 2 === 0 ? "left:5%;justify-content:flex-start" : "right:5%;justify-content:flex-end";
+    return `<span class="source-folio source-folio--digital" aria-label="Digital page ${digital}" style="${side};bottom:2.2%;width:10%;height:3%;font-size:1.2cqw;color:#303030">${digital}</span>`;
+  }
   const center = source.bbox.x + source.bbox.w / 2;
   const justify = center < pageWidth * .4 ? "flex-start" : center > pageWidth * .6 ? "flex-end" : "center";
   const sourceText = source.text?.trim() ?? "";

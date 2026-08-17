@@ -919,22 +919,27 @@ function StagePage({
               );
               const captionAssets = assets.filter(
                 (asset) =>
-                  requestedIds.has(asset.id) &&
+                  isMeaningfulStoryboardAsset(asset) &&
+                  (requestedIds.has(asset.id) || !asset.containsText) &&
                   !isDecorativePageAsset(
                     asset,
                     extractedPage.width ?? 612,
                     extractedPage.height ?? 792,
                   ),
               );
-              const captions = await captionImagesWithAi({
-                pageImage: thumbnail,
-                assets: captionAssets,
-                pageText: extractedPage.text,
-                language: captionLanguage,
-                keys: providerKeys,
-                provider: captionProvider,
-                signal: controller.signal,
-              });
+              const captions = await withProviderRetry(
+                () =>
+                  captionImagesWithAi({
+                    pageImage: thumbnail,
+                    assets: captionAssets,
+                    pageText: extractedPage.text,
+                    language: captionLanguage,
+                    keys: providerKeys,
+                    provider: captionProvider,
+                    signal: controller.signal,
+                  }),
+                controller.signal,
+              );
               return { page, captions };
             }),
           );
@@ -4400,11 +4405,20 @@ function buildGlossary(book: DeviceBook) {
     }));
 }
 function isTableOfContentsPage(page: StructuredPage) {
-  const sample = [
-    page.title,
-    ...page.sections.slice(0, 4).map((section) => section.text),
-  ].join(" ");
-  return /\b(table of contents|contents|yaliyomo|faharasa)\b/i.test(sample);
+  const lines = [page.title, ...page.sections.map((section) => section.text)]
+    .flatMap((value) => value.split(/\n+/))
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (/\b(table of contents|contents|yaliyomo|faharasa)\b/i.test(lines.slice(0, 8).join(" ")))
+    return true;
+  const leaderRows = lines.filter((line) => /\S\s*\.{2,}\s*\d{1,4}\s*$/.test(line));
+  const numberedRows = lines.filter(
+    (line) =>
+      line.length <= 140 &&
+      /[A-Za-zÀ-ž]\S*(?:\s+\S+){0,12}\s+\d{1,4}\s*$/.test(line),
+  );
+  const looksLikeExercise = /\b(?:exercise|activity|questions?|zoezi|shughuli|maswali|jibu|andika)\b/i.test(lines.join(" "));
+  return leaderRows.length >= 3 || (!looksLikeExercise && numberedRows.length >= 5);
 }
 function buildTableOfContents(book: DeviceBook) {
   const pages = [...(book.structuredPages ?? [])].sort(
@@ -4450,7 +4464,7 @@ function buildTableOfContents(book: DeviceBook) {
       }
     }
   }
-  return entries.slice(0, 24);
+  return entries;
 }
 
 type PageDecoration = {
@@ -4564,6 +4578,17 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     effectiveSourcePage,
     extractedPage.text ?? "",
   );
+  const contentsPages = structuredPages.filter(isTableOfContentsPage);
+  const contentsIndex = contentsPages.findIndex(
+    (page) => page.pageNumber === sourcePage.pageNumber,
+  );
+  const tocEntriesForPage =
+    contentsIndex >= 0
+      ? tableOfContents.slice(
+          Math.floor((contentsIndex * tableOfContents.length) / contentsPages.length),
+          Math.floor(((contentsIndex + 1) * tableOfContents.length) / contentsPages.length),
+        )
+      : undefined;
   const tocTitle = isTableOfContentsPage(sourcePage)
     ? ([
         sourcePage.title,
@@ -4578,17 +4603,35 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     fontFamily,
     digitalPageNumber,
     decoration,
-    tocEntries: isTableOfContentsPage(sourcePage) ? tableOfContents : undefined,
+    tocEntries: tocEntriesForPage,
     tocTitle,
   };
   const storyboardPage = await storyboardPhase(
     `Rendering page ${sourcePage.pageNumber} as semantic HTML`,
     () =>
-      createGeometryStoryboardPage(
-        effectiveSourcePage,
-        renderPage,
-        geometryOptions,
-      ),
+      providerKeys && visionProvider && userInstructions.trim()
+        ? withProviderRetry(
+            () =>
+              createAdtStoryboardPage(
+                effectiveSourcePage,
+                renderPage,
+                geometryOptions,
+                {
+                  keys: providerKeys,
+                  provider: visionProvider,
+                  styleguide,
+                  userInstructions: `${designInstructions}\n${userInstructions}`.trim(),
+                  signal,
+                  requireAi: true,
+                },
+              ),
+            signal,
+          )
+        : createGeometryStoryboardPage(
+            effectiveSourcePage,
+            renderPage,
+            geometryOptions,
+          ),
   );
   const savedCaptions = (book.imageCaptions ?? [])
     .filter((caption) => caption.pageNumber === sourcePage.pageNumber)
@@ -4731,6 +4774,23 @@ async function rerenderPageFromAssistant(
     sourceTextCatalog: buildTextCatalog(next),
     imageCaptions: buildImageCaptions(next),
   };
+}
+
+async function withProviderRetry<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) break;
+    }
+  }
+  throw lastError;
 }
 
 async function processWithBoundedConcurrency<T>(
@@ -4926,6 +4986,7 @@ type AdtStoryboardOptions = {
   styleguide: string;
   userInstructions?: string;
   signal?: AbortSignal;
+  requireAi?: boolean;
 };
 async function createAdtStoryboardPage(
   sourcePage: StructuredPage,
@@ -5033,7 +5094,10 @@ async function createAdtStoryboardPage(
     );
     return {
       ...base,
-      html: interactive,
+      html: ensureVisibleDigitalFolio(
+        interactive,
+        options.digitalPageNumber,
+      ),
       renderSource: "ai" as const,
       renderProvider: rendered.provider,
       renderModel: rendered.model,
@@ -5041,10 +5105,18 @@ async function createAdtStoryboardPage(
     };
   } catch (error) {
     if (isAbortError(error)) throw error;
+    if (ai.requireAi) throw error;
     // Never persist a partially valid model response. The geometry renderer is
     // the safe semantic fallback and also makes provider outages resumable.
     return createGeometryStoryboardPage(sourcePage, extractedPage, options);
   }
+}
+
+function ensureVisibleDigitalFolio(html: string, pageNumber: number) {
+  if (/class=["'][^"']*source-folio|data-litera-folio/i.test(html)) return html;
+  const side = pageNumber % 2 === 0 ? "left:5%" : "right:5%";
+  const folio = `<span data-litera-folio aria-label="Digital page ${pageNumber}" style="position:absolute;z-index:30;${side};bottom:2.2%;min-width:2em;color:#303030;font:600 clamp(.7rem,1.2cqw,1rem)/1 Arial,sans-serif;text-align:center">${pageNumber}</span>`;
+  return html.replace(/<\/main>/i, `${folio}</main>`);
 }
 
 function reinforceLightTextSurfaces(html: string, accent: string) {

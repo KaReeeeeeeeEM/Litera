@@ -1,5 +1,6 @@
 import type { DeviceBook, TextCatalogEntry } from "@/components/device/device-types";
 import type { ProviderId, ProviderKeys } from "@/components/device/provider-vault";
+import { parseProviderJson } from "@/lib/device-pipeline/provider-json";
 
 const BATCH_SIZE = 50;
 const translationInstruction = `Translate textbook catalog entries faithfully and naturally. Preserve meaning, names, numbers, terminology, punctuation, placeholders, and formatting markers. Return exactly one complete translation for every input, in the same order. Do not summarize, omit, combine, explain, or add content.`;
@@ -75,9 +76,7 @@ async function providerFetch(input: string, init: RequestInit) {
 }
 
 function parseTranslations(value: string) {
-  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? value;
-  const start = fenced.indexOf("{"); const end = fenced.lastIndexOf("}");
-  const parsed = JSON.parse(start >= 0 && end >= start ? fenced.slice(start, end + 1) : fenced) as { translations?: unknown };
+  const parsed = parseProviderJson<{ translations?: unknown }>(value);
   if (!Array.isArray(parsed.translations) || !parsed.translations.every(item => typeof item === "string")) throw new Error("The translation provider returned an invalid catalog response.");
   return parsed.translations;
 }
