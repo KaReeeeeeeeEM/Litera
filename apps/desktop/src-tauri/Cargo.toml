@@ -1,6 +1,6 @@
 [package]
 name = "litera-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "Litera accessible publishing workspace"
 authors = ["Litera Team"]
 edition = "2021"

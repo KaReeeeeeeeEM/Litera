@@ -5,6 +5,7 @@ import {
 } from "../src/lib/device-pipeline/storyboard-engine";
 import { structurePageText } from "../src/lib/device-pipeline/structure-engine";
 import {
+  completeImageCaptions,
   hydrateStoryboardAssets,
   renderPageWithAi,
   sanitizeStoryboardHtml,
@@ -17,6 +18,19 @@ import {
   inferCorrectAnswers,
   renderMathInText,
 } from "../src/lib/device-pipeline/math-content-engine";
+
+const completedCaptions = completeImageCaptions(
+  [{ imageId: "figure-1", caption: "Picha ya nyanya tano mezani." }],
+  [
+    { id: "figure-1", blob: new Blob(), bounds: { x: 10, y: 20, w: 80, h: 60 } },
+    { id: "figure-2", blob: new Blob(), bounds: { x: 120, y: 20, w: 80, h: 60 } },
+  ],
+  "Zoezi: Hesabu vitu na uandike jibu kwenye nafasi.",
+  "sw",
+);
+assert.equal(completedCaptions.length, 2, "captioning must return one usable caption for every extracted figure");
+assert.equal(completedCaptions[0]?.caption, "Picha ya nyanya tano mezani.");
+assert.match(completedCaptions[1]?.caption ?? "", /^Mchoro /, "missing Swahili captions need a language-matched accessible fallback");
 
 assert.deepEqual(
   inferCorrectAnswers(

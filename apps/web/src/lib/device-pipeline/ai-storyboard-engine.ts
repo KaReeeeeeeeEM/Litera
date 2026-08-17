@@ -192,9 +192,48 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
   const captions = parsed.filter(
     (item) => requested.has(item.imageId) && item.caption.trim().length >= 12,
   );
-  if (captions.length !== requested.size)
-    throw new Error("The vision provider did not return a useful caption for every meaningful image.");
-  return captions;
+  return completeImageCaptions(captions, assets, pageText, language);
+}
+
+export function completeImageCaptions(
+  captions: AiImageCaption[],
+  assets: AiStoryboardAsset[],
+  pageText = "",
+  language = "en",
+) {
+  const accepted = new Map(
+    captions
+      .filter((item) => item.caption.trim().length >= 12)
+      .map((item) => [item.imageId, item.caption.trim()]),
+  );
+  const context = captionFallbackContext(pageText);
+  const swahili = /^(?:sw|swa)(?:-|$)/i.test(language);
+  return assets.map((asset) => ({
+    imageId: asset.id,
+    caption:
+      accepted.get(asset.id) ??
+      (swahili
+        ? `Mchoro unaotumika katika sehemu hii: ${context}`
+        : `Visual used in this section: ${context}`),
+  }));
+}
+
+function captionFallbackContext(pageText: string) {
+  const cleaned = pageText
+    .replace(/for online (?:reading|use) only/gi, " ")
+    .replace(/\S+\.indd\s+\d+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((value) => value.trim())
+    .filter((value) => value.length >= 12);
+  const instructional = sentences.find((value) =>
+    /\b(?:count|write|identify|match|compare|study|observe|exercise|activity|hesabu|andika|tambua|oanisha|linganisha|zoezi|shughuli)\b/i.test(value),
+  );
+  return (instructional ?? sentences[0] ?? cleaned ?? "Textbook activity visual")
+    .slice(0, 220)
+    .replace(/[.:;,-]+$/, "");
 }
 
 function parseCaptionPayload(raw: string): AiImageCaption[] {

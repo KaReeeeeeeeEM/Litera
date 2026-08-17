@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Hand,
   Languages,
   List,
   Pause,
@@ -19,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceBook, SpeechEntry } from "@/components/device/device-types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -251,9 +253,16 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     { value: "source", label: "Original" },
     ...Object.keys(book.languageCatalogs ?? {}).map((value) => ({ value, label: value })),
   ];
+  const activeContentsTitle =
+    [...(book.tableOfContents ?? [])]
+      .filter((item) => item.pageNumber <= (page.digitalPageNumber ?? index + 1))
+      .at(-1)?.title ?? "Contents";
+  const pageSignVideos = (book.signVideos ?? []).filter((video) =>
+    video.target?.includes(String(page.pageNumber)),
+  );
 
   return (
-    <Card className="relative mt-6 flex h-[calc(100dvh-9rem)] min-h-[42rem] w-full flex-col overflow-hidden rounded-none bg-muted/30">
+    <Card className="relative mt-6 flex h-[calc(100dvh-9rem)] min-h-0 w-full flex-col overflow-hidden rounded-none bg-muted/30 pb-16">
       <div className="flex min-h-0 w-full flex-1 items-start justify-center overflow-auto p-3 sm:p-6">
         <iframe
           className="aspect-[var(--page-ratio)] w-full border-0 bg-white shadow-xl"
@@ -266,20 +275,18 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
         />
       </div>
 
-      <div className="sticky inset-x-0 bottom-0 z-20 flex w-full shrink-0 items-center gap-1 rounded-none bg-popover/95 p-2 text-popover-foreground shadow-[0_-8px_24px_-18px_rgba(0,0,0,.55)] ring-1 ring-border backdrop-blur-md" role="group" aria-label="Reader controls">
+      <div className="absolute inset-x-0 bottom-0 z-20 flex h-auto w-full items-center justify-between gap-1 rounded-none bg-popover/95 p-2 text-popover-foreground shadow-lg ring-1 ring-border backdrop-blur-md" role="group" aria-label="Reader controls">
         <Popover>
-          <PopoverTrigger asChild><Button className="min-w-0 flex-1 justify-start sm:min-w-52" variant="ghost"><BookOpen data-icon="inline-start" /><span className="truncate">{book.metadata?.title || book.name}</span></Button></PopoverTrigger>
-          <PopoverContent align="start" className="w-80"><p className="mb-2 font-medium">Contents</p><div className="max-h-64 space-y-1 overflow-auto">{(book.tableOfContents ?? []).map((item) => { const target = pages.findIndex((candidate) => candidate.pageNumber === item.pageNumber); return <Button className="w-full justify-start" key={`${item.pageNumber}-${item.title}`} onClick={() => target >= 0 && changePage(target)} size="sm" variant="ghost"><List />{item.title}</Button>; })}</div></PopoverContent>
+          <PopoverTrigger asChild><Button aria-label="Main menu" className="min-w-0 flex-1 justify-start sm:min-w-64" variant="ghost"><List data-icon="inline-start" /><span className="truncate">{activeContentsTitle}</span></Button></PopoverTrigger>
+          <PopoverContent align="start" className="w-80"><p className="mb-2 font-medium">Contents</p><div className="flex max-h-64 flex-col gap-1 overflow-auto">{(book.tableOfContents ?? []).map((item) => { const target = pages.findIndex((candidate) => (candidate.digitalPageNumber ?? candidate.pageNumber) === item.pageNumber); return <Button className="w-full justify-start" key={`${item.pageNumber}-${item.title}`} onClick={() => target >= 0 && changePage(target)} size="sm" variant="ghost"><span className="min-w-0 flex-1 truncate text-left">{item.title}</span><span className="tabular-nums text-muted-foreground">{item.pageNumber}</span></Button>; })}</div></PopoverContent>
         </Popover>
-        <div className="flex shrink-0 items-center rounded-xl bg-muted/60"><Button aria-label="Previous page" disabled={index === 0} onClick={() => changePage(index - 1)} size="icon" variant="ghost"><ChevronLeft /></Button><span className="min-w-24 text-center text-sm tabular-nums">Page {page.digitalPageNumber ?? index + 1} of {pages.length}</span><Button aria-label="Next page" disabled={index === pages.length - 1} onClick={() => changePage(index + 1)} size="icon" variant="ghost"><ChevronRight /></Button></div>
-        <div className="flex flex-1 justify-end">
-          <Button aria-label="Previous narration" disabled={!speech.length || activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button>
-          <Button aria-label={playing ? "Pause narration" : "Read page aloud"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button>
-          <Button aria-label="Next narration" disabled={!speech.length || activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button>
-          <Button aria-label="Stop narration" disabled={!speech.length} onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button>
-          <Button aria-label={playing ? "Text to speech active" : "Text to speech"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button>
+        <div className="flex shrink-0 items-center gap-0.5 px-1"><Button aria-label="Previous page" disabled={index === 0} onClick={() => changePage(index - 1)} size="icon" variant="ghost"><ChevronLeft /></Button><span className="min-w-16 px-2 text-center text-base tabular-nums"><span className="font-medium">{page.digitalPageNumber ?? index + 1}</span><span className="text-muted-foreground"> / {pages.length}</span></span><Button aria-label="Next page" disabled={index === pages.length - 1} onClick={() => changePage(index + 1)} size="icon" variant="ghost"><ChevronRight /></Button></div>
+        <div className="flex flex-1 items-center justify-end gap-2 pl-1">
+          <Popover><PopoverTrigger asChild><Button aria-label="Glossary" disabled={!book.glossary?.length} size="icon" variant="ghost"><BookOpen /></Button></PopoverTrigger><PopoverContent align="end" className="w-80"><p className="mb-2 font-medium">Glossary</p><dl className="flex max-h-64 flex-col gap-3 overflow-auto">{(book.glossary ?? []).map((item) => <div key={item.term}><dt className="font-medium">{item.term}</dt><dd className="text-sm text-muted-foreground">{item.definition}</dd></div>)}</dl></PopoverContent></Popover>
+          <Popover open={playing} onOpenChange={(open) => { if (!open && playing) stopSpeech(); }}><PopoverTrigger asChild><Button aria-label={playing ? "Deactivate text to speech" : "Activate text to speech"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button></PopoverTrigger><PopoverContent align="end" className="w-80"><div className="flex items-center justify-between gap-2"><div><p className="font-medium">Text to speech</p><p className="text-sm text-muted-foreground">Narration {activeSpeechIndex + 1} of {speech.length}</p></div><div className="flex items-center"><Button aria-label="Previous narration" disabled={activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button><Button aria-label={playing ? "Pause narration" : "Play narration"} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button><Button aria-label="Next narration" disabled={activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button><Button aria-label="Stop narration" onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button></div></div></PopoverContent></Popover>
+          {book.signVideos?.length ? <Popover><PopoverTrigger asChild><Button aria-label="Sign language" disabled={!pageSignVideos.length} size="icon" variant="ghost"><Hand /></Button></PopoverTrigger><PopoverContent align="end" className="w-72"><p className="font-medium">Sign language</p><p className="mt-1 text-sm text-muted-foreground">{pageSignVideos.length ? `${pageSignVideos.length} signed video ${pageSignVideos.length === 1 ? "is" : "are"} mapped to this page.` : "No signed video is mapped to this page."}</p></PopoverContent></Popover> : null}
           <Popover><PopoverTrigger asChild><Button aria-label="Language" size="icon" variant="ghost"><Languages /></Button></PopoverTrigger><PopoverContent align="end" className="w-60"><Select onValueChange={setLanguage} value={language}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{languages.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></PopoverContent></Popover>
-          <Popover><PopoverTrigger asChild><Button aria-label="Reader settings" size="icon" variant="ghost"><Settings /></Button></PopoverTrigger><PopoverContent align="end" className="grid w-72 gap-4"><div><p className="font-medium">Reader settings</p><p className="mt-1 text-sm text-muted-foreground">Narration follows every text entry in page order.</p></div><label className="flex items-center justify-between gap-4 text-sm"><span>Read pages automatically</span><input checked={autoplay} onChange={(event) => setAutoplay(event.target.checked)} type="checkbox" /></label><label className="grid gap-2 text-sm"><span>Highlighting</span><Select onValueChange={(value) => setHighlightMode(value as HighlightMode)} value={highlightMode}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="word">Word by word</SelectItem><SelectItem value="sentence">Sentence by sentence</SelectItem></SelectContent></Select></label></PopoverContent></Popover>
+          <Popover><PopoverTrigger asChild><Button aria-label="Settings" size="icon" variant="ghost"><Settings /></Button></PopoverTrigger><PopoverContent align="end" className="grid w-72 gap-4"><div><p className="font-medium">Reader settings</p><p className="mt-1 text-sm text-muted-foreground">Narration follows every text entry in page order.</p></div><label className="flex items-center justify-between gap-4 text-sm"><span>Read pages automatically</span><Checkbox checked={autoplay} onCheckedChange={(checked) => setAutoplay(checked === true)} /></label><label className="grid gap-2 text-sm"><span>Highlighting</span><Select onValueChange={(value) => setHighlightMode(value as HighlightMode)} value={highlightMode}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="word">Word by word</SelectItem><SelectItem value="sentence">Sentence by sentence</SelectItem></SelectContent></Select></label></PopoverContent></Popover>
         </div>
       </div>
     </Card>

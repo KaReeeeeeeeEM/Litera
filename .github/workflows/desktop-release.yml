@@ -57,12 +57,12 @@ jobs:
             Litera Desktop __VERSION__ is a signed cross-platform release for accessible educational publishing.
 
             ## Highlights
-            - Page-scoped re-render shimmer and reliable completion-state cleanup
-            - More complete native, fragmented, vector, and composed image recovery
-            - Testable Storyboard activities with localized submission feedback
-            - Full-width fixed reader dock with page, narration, language, and settings controls
-            - Deduplicated narration, word/sentence highlighting, and clean image-caption speech
-            - Automatic split-range selection and a fixed Windows WebView viewport layout
+            - Fast deterministic single-page re-rendering with AI fallback instead of stalled or invalid responses
+            - Lower-memory Storyboard scheduling and batched persistence for smoother conversion on modest computers
+            - Resilient book-language image captions with a usable description for every extracted figure
+            - Recovered continuous multi-page tables of contents with digital destinations and clean leader handling
+            - Compact accessible image-caption cards with readable page badges
+            - Full-width fixed reader dock matching the established page, contents, speech, language, and settings layout
 
             ## Upgrade
             Existing Litera Desktop installations can open **Updates** and choose **Check for updates**. New installations can download the matching macOS, Windows, Linux, or universal Android package from this release.

@@ -122,6 +122,7 @@ import {
 } from "@/lib/device-pipeline/geometry-storyboard-engine";
 import {
   captionImagesWithAi,
+  completeImageCaptions,
   hydrateStoryboardAssets,
   renderPageWithAi,
   storyboardPaletteIsSafe,
@@ -730,16 +731,17 @@ function StagePage({
           onChange(working, "Started page storyboarding"),
         );
         const concurrency =
-          working.performanceMode === "eco"
-            ? 1
-            : working.performanceMode === "maximum"
-              ? 4
-              : 3;
+          working.performanceMode === "maximum" ? 2 : 1;
         // Persist each finished page. A batched write made small/split
         // conversions appear frozen at 0% until the final page completed and
         // also discarded every completed page when a provider request was
         // stopped mid-wave.
-        const persistenceBatchSize = 1;
+        const persistenceBatchSize =
+          working.performanceMode === "eco"
+            ? 3
+            : working.performanceMode === "maximum"
+              ? 4
+              : 2;
         let persistChain = Promise.resolve();
         const renderWave = async (pages: StructuredPage[]) =>
           processWithBoundedConcurrency(
@@ -785,6 +787,7 @@ function StagePage({
                   );
               });
               await persistChain;
+              await yieldToBrowser();
             },
             controller.signal,
           );
@@ -912,7 +915,8 @@ function StagePage({
           },
         };
         await onChange(working, "Started image captioning");
-        const captionConcurrency = 4;
+        const captionConcurrency = working.performanceMode === "maximum" ? 3 : 2;
+        let fallbackCaptionCount = 0;
         for (let index = 0; index < pages.length; index += captionConcurrency) {
           const batch = pages.slice(index, index + captionConcurrency);
           const results = await Promise.all(
@@ -920,10 +924,7 @@ function StagePage({
               const storedPage = book.extractedPages?.find(
                 (candidate) => candidate.number === page.pageNumber,
               );
-              if (!storedPage)
-                throw new Error(
-                  `Page ${page.pageNumber} has no extracted image context.`,
-                );
+              if (!storedPage) return { page, captions: [] };
               const extractedPage = await ensurePageGeometry(book, storedPage);
               const thumbnail = await readablePageImage(book, extractedPage);
               const assets = await ensurePageAssets(book, {
@@ -945,19 +946,31 @@ function StagePage({
                     extractedPage.height ?? 792,
                   ),
               );
-              const captions = await withProviderRetry(
-                () =>
-                  captionImagesWithAi({
-                    pageImage: thumbnail,
-                    assets: captionAssets,
-                    pageText: extractedPage.text,
-                    language: captionLanguage,
-                    keys: providerKeys,
-                    provider: captionProvider,
-                    signal: controller.signal,
-                  }),
-                controller.signal,
-              );
+              let captions;
+              try {
+                captions = await withProviderRetry(
+                  () =>
+                    captionImagesWithAi({
+                      pageImage: thumbnail,
+                      assets: captionAssets,
+                      pageText: extractedPage.text,
+                      language: captionLanguage,
+                      keys: providerKeys,
+                      provider: captionProvider,
+                      signal: controller.signal,
+                    }),
+                  controller.signal,
+                );
+              } catch (error) {
+                if (isAbortError(error)) throw error;
+                captions = completeImageCaptions(
+                  [],
+                  captionAssets,
+                  extractedPage.text,
+                  captionLanguage,
+                );
+                fallbackCaptionCount += captions.length;
+              }
               return { page, captions };
             }),
           );
@@ -1009,7 +1022,11 @@ function StagePage({
           pipelineRun: { ...working.pipelineRun!, status: "complete" },
         };
         await onChange(working, "Completed image captioning");
-        toast.complete("Meaningful visuals now have persisted captions.");
+        if (fallbackCaptionCount)
+          toast.warning(
+            `Image Captioning completed. ${fallbackCaptionCount} visual descriptions used source-context fallbacks and can be reviewed.`,
+          );
+        else toast.complete("Meaningful visuals now have persisted captions.");
       } catch (error) {
         working = {
           ...working,
@@ -1780,10 +1797,11 @@ function StagePage({
     toast.warning(`${stage.label} stopped safely.`);
   }
   async function rerenderSinglePage(pageNumber: number, instructions?: string) {
-    if (!providerKeys) {
+    const requestedFixes = instructions?.trim();
+    if (requestedFixes && !providerKeys) {
       onConfigureProvider();
       throw new Error(
-        "Configure an AI provider before re-rendering this page.",
+        "Configure an AI provider before re-rendering with instructions.",
       );
     }
     const current = book.storyboardPages?.find(
@@ -1810,8 +1828,7 @@ function StagePage({
     const rendered = await rerenderPageFromAssistant(
       prepared,
       pageNumber,
-      instructions?.trim() ||
-        "Re-render this page while preserving the source design, content, activities, and accessibility.",
+      requestedFixes,
       `manual-page-${pageNumber}-${revision.id}`,
       providerKeys,
     );
@@ -2070,6 +2087,10 @@ async function storyboardPhase<T>(label: string, action: () => Promise<T>) {
         : String(error);
     throw new Error(`${label} failed — ${detail}`);
   }
+}
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
 function isAbortError(error: unknown) {
@@ -3694,21 +3715,17 @@ function StageOutput({ book, stage }: { book: DeviceBook; stage: StageSlug }) {
       <CardContent>
         <div className="grid gap-3 sm:grid-cols-2">
           {rows.slice(0, 50).map((row) => (
-            <button
-              className="flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:border-primary/30"
-              key={row.id}
-              type="button"
-            >
-              <span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-sm font-semibold text-primary">
-                {row.pageNumber}
-              </span>
-              <span className="min-w-0">
-                <strong className="block text-sm">Page {row.pageNumber}</strong>
-                <span className="line-clamp-2 text-xs text-muted-foreground">
+            <Card key={row.id} size="sm">
+              <CardHeader>
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle>Image description</CardTitle>
+                  <Badge variant="outline">Page {row.pageNumber}</Badge>
+                </div>
+                <CardDescription className="line-clamp-3">
                   {row.text}
-                </span>
-              </span>
-            </button>
+                </CardDescription>
+              </CardHeader>
+            </Card>
           ))}
         </div>
         {!rows.length ? (
@@ -4517,7 +4534,96 @@ function buildTableOfContents(book: DeviceBook) {
       }
     }
   }
+  const printedTitles = pages
+    .filter(isTableOfContentsPage)
+    .flatMap((page) => [page.title, ...page.sections.map((section) => section.text)])
+    .flatMap(extractPrintedContentsTitles)
+    .map((value) =>
+      value
+        .replace(/\s*\.{2,}\s*(?:\d{1,4}|[ivxlcdm]+)\s*$/i, "")
+        .replace(/\s+(?:\d{1,4}|[ivxlcdm]+)\s*$/i, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter(
+      (value) =>
+        value.length >= 4 &&
+        !/^(?:table of contents|contents|yaliyomo|faharasa|\.{2,}|\d+|[ivxlcdm]+)$/i.test(value),
+    );
+  for (const title of printedTitles) {
+    const key = title.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    const match = bestContentsDestination(title, pages);
+    if (!match) continue;
+    const digitalPageNumber =
+      pages.findIndex((page) => page.pageNumber === match.pageNumber) + 1;
+    const existingAtPage = entries.findIndex(
+      (entry) =>
+        entry.pageNumber === digitalPageNumber &&
+        (key.includes(entry.title.toLocaleLowerCase()) ||
+          entry.title.toLocaleLowerCase().includes(key)),
+    );
+    if (existingAtPage >= 0) {
+      if (title.length > entries[existingAtPage]!.title.length)
+        entries[existingAtPage] = { ...entries[existingAtPage]!, title };
+      seen.add(key);
+      continue;
+    }
+    seen.add(key);
+    entries.push({
+      title,
+      pageNumber: digitalPageNumber,
+      level: /^(?:sura|chapter|unit)\b/i.test(title) ? 1 : 2,
+    });
+  }
+  entries.sort((a, b) => a.pageNumber - b.pageNumber || a.level - b.level);
   return entries;
+}
+
+function extractPrintedContentsTitles(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const leaderEntries = [
+    ...normalized.matchAll(
+      /(?:^|\s)([^.]{3,160}?)\s*\.{2,}\s*(?:\d{1,4}|[ivxlcdm]+)(?=\s|$)/gi,
+    ),
+  ]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean);
+  if (leaderEntries.length) return leaderEntries;
+  return value.split(/\n+/);
+}
+
+function bestContentsDestination(title: string, pages: StructuredPage[]) {
+  const tokens = semanticTitleTokens(title);
+  if (!tokens.length) return undefined;
+  let best: { page: StructuredPage; score: number; matches: number } | undefined;
+  for (const page of pages) {
+    if (isTableOfContentsPage(page)) continue;
+    const pageTokens = new Set(
+      semanticTitleTokens(
+        [page.title, ...page.sections.slice(0, 8).map((section) => section.text)].join(" "),
+      ),
+    );
+    const matches = tokens.filter((token) => pageTokens.has(token)).length;
+    const score = matches / tokens.length;
+    if (!best || score > best.score) best = { page, score, matches };
+  }
+  const requiredMatches = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
+  return best && best.score >= 0.5 && best.matches >= requiredMatches
+    ? best.page
+    : undefined;
+}
+
+function semanticTitleTokens(value: string) {
+  const ignored = new Set(["the", "and", "of", "ya", "na", "wa", "la"]);
+  return [
+    ...new Set(
+      (value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+        (token) => token.length > 1 && !ignored.has(token),
+      ),
+    ),
+  ];
 }
 
 type PageDecoration = {
@@ -4753,9 +4859,9 @@ function sourceAwareDesignInstructions(
 async function rerenderPageFromAssistant(
   book: DeviceBook,
   pageNumber: number,
-  instruction: string,
+  instruction: string | undefined,
   promptId: string,
-  providerKeys: ProviderKeys,
+  providerKeys?: ProviderKeys,
 ) {
   const structuredPages = uniqueStoryboardSources(book.structuredPages);
   const sourcePage = structuredPages.find(
@@ -4772,20 +4878,41 @@ async function rerenderPageFromAssistant(
     book,
     structuredPages,
   );
-  let storyboardPage = await renderStoryboardSourcePage({
-    book,
-    sourcePage,
-    structuredPages,
-    tableOfContents,
-    publicationPalette,
-    providerKeys,
-    visionProvider: selectVisionProvider(providerKeys),
-    userInstructions: instruction,
-  });
+  let storyboardPage;
+  try {
+    storyboardPage = await renderStoryboardSourcePage({
+      book,
+      sourcePage,
+      structuredPages,
+      tableOfContents,
+      publicationPalette,
+      providerKeys: instruction ? providerKeys : undefined,
+      visionProvider:
+        instruction && providerKeys ? selectVisionProvider(providerKeys) : undefined,
+      userInstructions: instruction,
+    });
+  } catch (error) {
+    if (!instruction || isAbortError(error)) throw error;
+    storyboardPage = await renderStoryboardSourcePage({
+      book,
+      sourcePage,
+      structuredPages,
+      tableOfContents,
+      publicationPalette,
+    });
+    toast.warning(
+      `The instructed AI render was unavailable. Page ${pageNumber} was rebuilt faithfully with the local engine instead.`,
+    );
+  }
   const previousPage = book.storyboardPages?.find(
     (page) => page.pageNumber === pageNumber,
   );
-  if (previousPage?.html === storyboardPage.html && instruction.trim()) {
+  if (
+    previousPage?.html === storyboardPage.html &&
+    instruction &&
+    providerKeys &&
+    storyboardPage.renderSource === "ai"
+  ) {
     storyboardPage = await renderStoryboardSourcePage({
       book,
       sourcePage,
@@ -4807,7 +4934,10 @@ async function rerenderPageFromAssistant(
     ),
     storyboardPage,
   ].sort((a, b) => a.pageNumber - b.pageNumber);
-  const storyboardCss = await compileStoryboardTailwindCss(storyboardPages);
+  const storyboardCss =
+    storyboardPage.renderSource === "ai"
+      ? await compileStoryboardTailwindCss(storyboardPages)
+      : book.storyboardCss;
   const next = {
     ...book,
     storyboardPages,
