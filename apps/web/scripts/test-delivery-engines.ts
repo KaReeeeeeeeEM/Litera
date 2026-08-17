@@ -4,6 +4,7 @@ import type { DeviceBook } from "../src/components/device/device-types";
 import { packageBook } from "../src/lib/device-pipeline/export-engine";
 import {
   isSpeakableText,
+  normalizeDottedPageReferences,
   prepareTextForSpeech,
 } from "../src/lib/device-pipeline/speech-engine";
 
@@ -16,6 +17,18 @@ async function run() {
   assert.equal(
     prepareTextForSpeech("Mwaka 2025", "sw"),
     "Mwaka elfu mbili na ishirini na tano",
+  );
+  assert.equal(
+    normalizeDottedPageReferences("Utangulizi ............ IV", "sw-TZ"),
+    "Utangulizi . nambari ya Kirumi IV",
+  );
+  assert.equal(
+    prepareTextForSpeech("Sura ya kwanza ............ 9", "sw"),
+    "Sura ya kwanza . nambari tisa",
+  );
+  assert.equal(
+    normalizeDottedPageReferences("Introduction ............ XII", "en"),
+    "Introduction . Roman numeral XII",
   );
   assert.equal(isSpeakableText("..."), false);
   assert.equal(isSpeakableText("Kitabu"), true);

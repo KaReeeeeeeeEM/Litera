@@ -25,6 +25,7 @@ import type {
   ExtractedLayoutBlock,
   ExtractedPageAsset,
   ReadingLevel,
+  SpeechEntry,
   StageSlug,
   StructuredPage,
   TextCatalogEntry,
@@ -1874,6 +1875,38 @@ function StagePage({
     );
     await onChange(rendered, `Re-rendered storyboard page ${pageNumber}`);
   }
+  async function regenerateSingleSpeech(
+    speech: SpeechEntry,
+    instructions?: string,
+  ) {
+    if (!providerKeys) {
+      onConfigureProvider();
+      throw new Error("Configure a speech-capable provider first.");
+    }
+    const catalog = book.languageCatalogs?.[speech.language];
+    const entry = catalog?.entries.find((candidate) => candidate.id === speech.textId);
+    if (!entry) throw new Error("The source text for this speech item is unavailable.");
+    const routing = loadProviderRouting();
+    const regenerated = await synthesizeCatalogEntry({
+      entry,
+      language: speech.language,
+      provider: selectSpeechProvider(providerKeys),
+      keys: providerKeys,
+      voice: speech.voice ?? book.speechVoice ?? routing.voice,
+      speed: speech.speed ?? (Number(routing.speed) || 1),
+      instructions,
+    });
+    await onChange(
+      {
+        ...book,
+        speechEntries: (book.speechEntries ?? []).map((candidate) =>
+          candidate.id === speech.id ? regenerated : candidate,
+        ),
+      },
+      `Regenerated speech ${speech.textId}`,
+    );
+    toast.complete("The selected speech clip was regenerated.");
+  }
   async function resolveValidationWithAi() {
     if (!providerKeys) {
       onConfigureProvider();
@@ -2055,7 +2088,11 @@ function StagePage({
       ) : active === "language" ? (
         <LanguageWorkspace book={book} onChange={onChange} />
       ) : active === "speech" ? (
-        <SpeechWorkspace book={book} onChange={onChange} />
+        <SpeechWorkspace
+          book={book}
+          onChange={onChange}
+          onRegenerateSpeech={regenerateSingleSpeech}
+        />
       ) : active === "sign-language" ? (
         <SignLanguageWorkspace book={book} onChange={onChange} />
       ) : active === "validate" ? (

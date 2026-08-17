@@ -15,6 +15,7 @@ import {
   LoaderCircle,
   Pause,
   Play,
+  RefreshCw,
   Sparkles,
   Upload,
   Video,
@@ -34,7 +35,17 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
   SelectContent,
@@ -55,6 +66,7 @@ import { loadProviderRouting } from "@/components/device/device-settings";
 type Props = {
   book: DeviceBook;
   onChange: (book: DeviceBook, summary?: string) => Promise<void>;
+  onRegenerateSpeech?: (entry: SpeechEntry, instructions?: string) => Promise<void>;
 };
 
 const voiceDescriptions: Record<string, string> = {
@@ -74,8 +86,9 @@ const voiceDescriptions: Record<string, string> = {
   Fenrir: "Bold and energetic",
 };
 
-export function SpeechWorkspace({ book, onChange }: Props) {
+export function SpeechWorkspace({ book, onChange, onRegenerateSpeech }: Props) {
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [regenerating, setRegenerating] = useState<SpeechEntry>();
   const routing = loadProviderRouting();
   const voices = routing.speech === "gemini"
     ? ["Kore", "Puck", "Aoede", "Charon", "Fenrir"]
@@ -126,7 +139,7 @@ export function SpeechWorkspace({ book, onChange }: Props) {
                 </div>
                 <div className="grid gap-2">
                   {entries?.slice(0, visibleCounts[language] ?? 100).map((entry) => (
-                    <SpeechRow entry={entry} key={entry.id} />
+                    <SpeechRow entry={entry} key={entry.id} onRegenerate={setRegenerating} />
                   ))}
                 </div>
                 {(entries?.length ?? 0) > (visibleCounts[language] ?? 100) ? (
@@ -151,11 +164,19 @@ export function SpeechWorkspace({ book, onChange }: Props) {
           </p>
         ) : null}
       </CardContent>
+      <SpeechRegenerationDialog
+        entry={regenerating}
+        onOpenChange={(open) => !open && setRegenerating(undefined)}
+        onRegenerate={async (entry, instructions) => {
+          await onRegenerateSpeech?.(entry, instructions);
+          setRegenerating(undefined);
+        }}
+      />
     </Card>
   );
 }
 
-function SpeechRow({ entry }: { entry: SpeechEntry }) {
+function SpeechRow({ entry, onRegenerate }: { entry: SpeechEntry; onRegenerate: (entry: SpeechEntry) => void }) {
   return (
     <div className="grid gap-3 rounded-xl border p-3 sm:grid-cols-[1fr_auto] sm:items-center">
       <div className="min-w-0">
@@ -166,8 +187,76 @@ function SpeechRow({ entry }: { entry: SpeechEntry }) {
           {entry.words.map((word) => word.word).join(" ")}
         </p>
       </div>
-      <WaveAudioPlayer audio={entry.audio} label={entry.textId} />
+      <div className="flex items-center gap-2">
+        <WaveAudioPlayer audio={entry.audio} label={entry.textId} />
+        <Button aria-label={`Regenerate ${entry.textId}`} onClick={() => onRegenerate(entry)} size="icon" title="Regenerate this speech" variant="outline">
+          <RefreshCw />
+        </Button>
+      </div>
     </div>
+  );
+}
+
+function SpeechRegenerationDialog({ entry, onOpenChange, onRegenerate }: {
+  entry?: SpeechEntry;
+  onOpenChange: (open: boolean) => void;
+  onRegenerate: (entry: SpeechEntry, instructions?: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"faithful" | "instructions">("faithful");
+  const [instructions, setInstructions] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    if (!entry) return;
+    setMode("faithful");
+    setInstructions("");
+  }, [entry]);
+  return (
+    <Dialog onOpenChange={onOpenChange} open={Boolean(entry)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Regenerate this speech</DialogTitle>
+          <DialogDescription>
+            Create the clip faithfully or add pronunciation and delivery instructions for this item only.
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel>Regeneration mode</FieldLabel>
+            <ToggleGroup onValueChange={(value) => value && setMode(value as typeof mode)} type="single" value={mode} variant="outline">
+              <ToggleGroupItem value="faithful">Faithful</ToggleGroupItem>
+              <ToggleGroupItem value="instructions">With instructions</ToggleGroupItem>
+            </ToggleGroup>
+          </Field>
+          {mode === "instructions" ? (
+            <Field>
+              <FieldLabel htmlFor="speech-regeneration-instructions">Instructions</FieldLabel>
+              <Textarea
+                id="speech-regeneration-instructions"
+                onChange={(event) => setInstructions(event.target.value)}
+                placeholder="For example: pause briefly before the answer, and pronounce ‘IV’ as a Roman numeral."
+                value={instructions}
+              />
+            </Field>
+          ) : null}
+        </FieldGroup>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} type="button" variant="outline">Cancel</Button>
+          <Button
+            disabled={!entry || submitting || (mode === "instructions" && !instructions.trim())}
+            onClick={async () => {
+              if (!entry) return;
+              setSubmitting(true);
+              try { await onRegenerate(entry, mode === "instructions" ? instructions.trim() : undefined); }
+              finally { setSubmitting(false); }
+            }}
+            type="button"
+          >
+            {submitting ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+            Regenerate
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -567,6 +656,7 @@ const publishingSteps = [
   "Upload changed files",
   "Create deployment commit",
   "Enable GitHub Pages",
+  "Verify deployment",
   "Published",
 ];
 
@@ -650,9 +740,9 @@ export function PublishWorkspace({ book, onChange }: Props) {
               <p className="text-xs text-muted-foreground">The token stays in this form and is sent only to GitHub while publishing.</p>
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field><FieldLabel htmlFor="github-owner">Owner or organisation</FieldLabel><Input id="github-owner" onChange={(event) => setOwner(event.target.value)} value={owner} /></Field>
-              <Field><FieldLabel htmlFor="github-repository">Repository</FieldLabel><Input id="github-repository" onChange={(event) => setRepository(event.target.value)} value={repository} /></Field>
-              <Field><FieldLabel htmlFor="github-branch">Publishing branch</FieldLabel><Input id="github-branch" onChange={(event) => setBranch(event.target.value)} value={branch} /></Field>
+              <Field><FieldLabel htmlFor="github-owner">Owner or organisation</FieldLabel><Input id="github-owner" onChange={(event) => setOwner(event.target.value)} placeholder="Your GitHub username or organisation" value={owner} /></Field>
+              <Field><FieldLabel htmlFor="github-repository">Repository</FieldLabel><Input id="github-repository" onChange={(event) => setRepository(event.target.value)} placeholder="accessible-book" value={repository} /></Field>
+              <Field><FieldLabel htmlFor="github-branch">Publishing branch</FieldLabel><Input id="github-branch" onChange={(event) => setBranch(event.target.value)} placeholder="main" value={branch} /></Field>
               <Field>
                 <FieldLabel>Repository visibility</FieldLabel>
                 <Select onValueChange={(value) => setVisibility(value as "public" | "private")} value={visibility}>
@@ -661,7 +751,7 @@ export function PublishWorkspace({ book, onChange }: Props) {
                 </Select>
               </Field>
             </div>
-            <Field><FieldLabel htmlFor="commit-message">Commit message</FieldLabel><Input id="commit-message" onChange={(event) => setCommitMessage(event.target.value)} value={commitMessage} /></Field>
+            <Field><FieldLabel htmlFor="commit-message">Commit message</FieldLabel><Input id="commit-message" onChange={(event) => setCommitMessage(event.target.value)} placeholder="Describe this accessible-book release" value={commitMessage} /></Field>
           </FieldGroup>
           <Button className="mt-6 w-full" disabled={publishing || !book.storyboardPages?.length} onClick={() => void publish()}>
             {publishing ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <Upload data-icon="inline-start" />}

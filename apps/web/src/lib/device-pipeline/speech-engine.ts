@@ -3,7 +3,7 @@ import type { SpeechEntry, TextCatalogEntry } from "@/components/device/device-t
 
 export function isSpeakableText(text: string) { return text.replace(/[\p{P}\p{S}\s]/gu, "").length > 0; }
 export function prepareTextForSpeech(text: string, language?: string) {
-  const cleaned = text
+  const cleaned = normalizeDottedPageReferences(text, language)
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -12,16 +12,17 @@ export function prepareTextForSpeech(text: string, language?: string) {
     : cleaned;
 }
 
-export async function synthesizeCatalogEntry({ entry, language, provider, keys, voice, speed, signal }: { entry: TextCatalogEntry; language: string; provider: ProviderId; keys: ProviderKeys; voice: string; speed: number; signal?: AbortSignal }): Promise<SpeechEntry> {
+export async function synthesizeCatalogEntry({ entry, language, provider, keys, voice, speed, instructions, signal }: { entry: TextCatalogEntry; language: string; provider: ProviderId; keys: ProviderKeys; voice: string; speed: number; instructions?: string; signal?: AbortSignal }): Promise<SpeechEntry> {
   const text = prepareTextForSpeech(entry.text, language);
   if (!isSpeakableText(text)) throw new Error(`Catalog entry ${entry.id} has no speakable text.`);
   let audio: Blob;
   if (provider === "openai" && keys.openai) {
-    const response = await providerFetch("https://api.openai.com/v1/audio/speech", { method: "POST", headers: { Authorization: `Bearer ${keys.openai}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: openAiVoice(voice), input: text, instructions: speechInstructions(language), speed, response_format: "mp3" }), signal });
+    const response = await providerFetch("https://api.openai.com/v1/audio/speech", { method: "POST", headers: { Authorization: `Bearer ${keys.openai}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: openAiVoice(voice), input: text, instructions: speechInstructions(language, instructions), speed, response_format: "mp3" }), signal });
     if (!response.ok) throw new Error((await safeProviderError(response)) || "OpenAI could not generate speech.");
     audio = await response.blob();
   } else if (provider === "gemini" && keys.gemini) {
-    const response = await providerFetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateContent", { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": keys.gemini }, body: JSON.stringify({ contents: [{ parts: [{ text }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: geminiVoice(voice) } } } } }), signal });
+    const prompt = `${speechInstructions(language, instructions)}\n\nRead only this text aloud:\n${text}`;
+    const response = await providerFetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateContent", { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": keys.gemini }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: geminiVoice(voice) } } } } }), signal });
     const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>; error?: { message?: string } };
     if (!response.ok) throw new Error(body.error?.message || "Gemini could not generate speech.");
     const inline = body.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data)?.inlineData;
@@ -37,9 +38,37 @@ function estimateDuration(text: string, speed: number) { return Math.max(500, Ma
 function estimateWordTimestamps(text: string, durationMs: number) { const words = text.split(/\s+/).filter(Boolean); const unit = durationMs / Math.max(1, words.length); return words.map((word, index) => ({ word, startMs: Math.round(index * unit), endMs: Math.round((index + 1) * unit) })); }
 function openAiVoice(value: string) { return ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"].includes(value) ? value : "alloy"; }
 function geminiVoice(value: string) { return ["Kore", "Puck", "Aoede", "Charon", "Fenrir"].includes(value) ? value : "Kore"; }
-function speechInstructions(language: string) {
+function speechInstructions(language: string, editorInstructions?: string) {
   const locale = language || "the text's language";
-  return `Speak naturally and consistently in ${locale}. Pronounce every number, symbol, unit, and mathematical expression in that same language; never switch to English.`;
+  const base = `Speak naturally and consistently in ${locale}. Pronounce every number, Roman numeral, symbol, unit, and mathematical expression in that same language; never switch to English. A dotted leader followed by digits is a number reference, and one followed by Roman-numeral letters is a Roman numeral reference; do not read the dots.`;
+  return editorInstructions?.trim()
+    ? `${base} Follow this pronunciation or delivery direction without changing or adding spoken content: ${editorInstructions.trim()}`
+    : base;
+}
+
+const referenceLabels: Record<string, { number: string; roman: string }> = {
+  en: { number: "number", roman: "Roman numeral" },
+  sw: { number: "nambari", roman: "nambari ya Kirumi" },
+  fr: { number: "numéro", roman: "chiffre romain" },
+  es: { number: "número", roman: "número romano" },
+  pt: { number: "número", roman: "algarismo romano" },
+  de: { number: "Nummer", roman: "römische Zahl" },
+  ar: { number: "الرقم", roman: "الرقم الروماني" },
+  hi: { number: "संख्या", roman: "रोमन अंक" },
+  zh: { number: "数字", roman: "罗马数字" },
+  ja: { number: "数字", roman: "ローマ数字" },
+};
+
+export function normalizeDottedPageReferences(text: string, language?: string) {
+  const baseLanguage = language?.toLowerCase().split(/[-_]/)[0] || "en";
+  const labels = referenceLabels[baseLanguage] ?? referenceLabels.en!;
+  return text.replace(
+    /\.{2,}\s*([IVXLCDM]+|\d[\d,]*)\b/gi,
+    (_, reference: string) => {
+      const roman = /^[IVXLCDM]+$/i.test(reference);
+      return `. ${roman ? labels.roman : labels.number} ${reference}`;
+    },
+  );
 }
 
 function localizeSwahiliNumbers(text: string) {
