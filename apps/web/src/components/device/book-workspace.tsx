@@ -551,22 +551,21 @@ function StagePage({
       setProcessing(true);
       try {
         const repeatAll = book.conversionConfig?.rangeRunMode === "all";
-        const existingStructured = repeatAll
+        let existingStructured = repeatAll
           ? []
           : (book.structuredPages ?? []);
         const existingStructuredNumbers = new Set(
           existingStructured.map((page) => page.pageNumber),
         );
-        const pagesToStructure = repeatAll
+        let pagesToStructure = repeatAll
           ? extractedPages
           : extractedPages.filter(
               (page) => !existingStructuredNumbers.has(page.number),
             );
         if (!pagesToStructure.length) {
-          toast.info(
-            "Every extracted page is already structured. Add and extract more pages or choose Repeat all selected pages.",
-          );
-          return;
+          existingStructured = [];
+          pagesToStructure = extractedPages;
+          toast.info("Re-sectioning every selected page.");
         }
         let working: DeviceBook = {
           ...book,
@@ -665,22 +664,21 @@ function StagePage({
       setProcessing(true);
       try {
         const repeatAll = book.conversionConfig?.rangeRunMode === "all";
-        const existingStoryboard = repeatAll
+        let existingStoryboard = repeatAll
           ? []
           : (book.storyboardPages ?? []);
         const existingStoryboardNumbers = new Set(
           existingStoryboard.map((page) => page.pageNumber),
         );
-        const pagesToRender = repeatAll
+        let pagesToRender = repeatAll
           ? structuredPages
           : structuredPages.filter(
               (page) => !existingStoryboardNumbers.has(page.pageNumber),
             );
         if (!pagesToRender.length) {
-          toast.info(
-            "Every structured page is already storyboarded. Add more pages or choose Repeat all selected pages.",
-          );
-          return;
+          existingStoryboard = [];
+          pagesToRender = structuredPages;
+          toast.info("Re-rendering every selected storyboard page.");
         }
         const tableOfContents = buildTableOfContents({
           ...book,
@@ -1458,20 +1456,19 @@ function StagePage({
         );
       const repeatAll = book.conversionConfig?.rangeRunMode === "all";
       const selectedSet = new Set(selectedPages);
-      const existingPages = repeatAll
+      let existingPages = repeatAll
         ? []
         : (book.extractedPages ?? []).filter((page) =>
             selectedSet.has(page.number),
           );
       const existingNumbers = new Set(existingPages.map((page) => page.number));
-      const pagesToExtract = repeatAll
+      let pagesToExtract = repeatAll
         ? selectedPages
         : selectedPages.filter((page) => !existingNumbers.has(page));
       if (!pagesToExtract.length) {
-        toast.info(
-          "Every selected page is already extracted. Add another range or choose Repeat all selected pages.",
-        );
-        return;
+        existingPages = [];
+        pagesToExtract = selectedPages;
+        toast.info("Re-extracting every selected source page.");
       }
       const totalPages = selectedPages.length;
       let working: DeviceBook = {

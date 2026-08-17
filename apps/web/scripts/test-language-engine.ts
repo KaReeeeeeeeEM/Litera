@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { translateCatalog } from "../src/lib/device-pipeline/language-engine";
-import { parseProviderJson } from "../src/lib/device-pipeline/provider-json";
+import { parseProviderJson, readProviderResponseJson } from "../src/lib/device-pipeline/provider-json";
 
 assert.deepEqual(
   parseProviderJson<{ translations: string[] }>(
@@ -17,6 +17,11 @@ const source = [
 ];
 
 async function run() {
+  await assert.rejects(
+    () => readProviderResponseJson(new Response("<html>Gateway unavailable</html>", { status: 502, headers: { "content-type": "text/html" } }), "Test provider"),
+    /Test provider returned an unreadable 502 response/,
+    "provider HTML errors must never leak an Unexpected token JSON exception",
+  );
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
     assert.equal(init?.signal?.aborted, false);

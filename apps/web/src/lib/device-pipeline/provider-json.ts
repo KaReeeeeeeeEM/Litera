@@ -24,6 +24,22 @@ export function parseProviderJson<T>(raw: string): T {
   );
 }
 
+export async function readProviderResponseJson<T>(
+  response: Response,
+  provider: string,
+): Promise<T> {
+  const body = await response.text();
+  try {
+    return parseProviderJson<T>(body);
+  } catch {
+    const contentType = response.headers.get("content-type") ?? "unknown content";
+    const detail = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+    throw new Error(
+      `${provider} returned an unreadable ${response.status || "network"} response (${contentType})${detail ? `: ${detail}` : ". Please try again."}`,
+    );
+  }
+}
+
 function balancedJson(value: string) {
   const start = value.search(/[\[{]/);
   if (start < 0) return "";

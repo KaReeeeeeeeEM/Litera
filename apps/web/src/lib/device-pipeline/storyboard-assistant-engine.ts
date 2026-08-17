@@ -1,5 +1,6 @@
 import type { DeviceBook } from "@/components/device/device-types";
 import type { ProviderKeys } from "@/components/device/provider-vault";
+import { readProviderResponseJson } from "@/lib/device-pipeline/provider-json";
 
 type ChatMessage = NonNullable<DeviceBook["assistantMessages"]>[number];
 
@@ -20,21 +21,21 @@ async function request(input: string, init: RequestInit) {
 
 async function callOpenAi(key: string, prompt: string) {
   const response = await request("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "gpt-5.4", input: prompt, max_output_tokens: 700 }) });
-  const data = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } };
+  const data = await readProviderResponseJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } }>(response, "OpenAI");
   if (!response.ok) throw new Error(data.error?.message || "OpenAI could not answer.");
   return data.output_text ?? data.output?.flatMap(item => item.content ?? []).map(item => item.text ?? "").join("") ?? "";
 }
 
 async function callGemini(key: string, prompt: string) {
   const response = await request("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent", { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.25, maxOutputTokens: 700 } }) });
-  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } };
+  const data = await readProviderResponseJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } }>(response, "Gemini");
   if (!response.ok) throw new Error(data.error?.message || "Gemini could not answer.");
   return data.candidates?.[0]?.content?.parts?.map(part => part.text ?? "").join("") ?? "";
 }
 
 async function callAnthropic(key: string, prompt: string) {
   const response = await request("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": key }, body: JSON.stringify({ model: "claude-3-5-sonnet-latest", max_tokens: 700, temperature: 0.25, messages: [{ role: "user", content: prompt }] }) });
-  const data = await response.json() as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
+  const data = await readProviderResponseJson<{ content?: Array<{ type: string; text?: string }>; error?: { message?: string } }>(response, "Anthropic");
   if (!response.ok) throw new Error(data.error?.message || "Anthropic could not answer.");
   return data.content?.filter(item => item.type === "text").map(item => item.text ?? "").join("") ?? "";
 }

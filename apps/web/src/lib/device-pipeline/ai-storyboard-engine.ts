@@ -1,5 +1,5 @@
 import type { ProviderKeys, ProviderId } from "@/components/device/provider-vault";
-import { parseProviderJson } from "@/lib/device-pipeline/provider-json";
+import { parseProviderJson, readProviderResponseJson } from "@/lib/device-pipeline/provider-json";
 
 export type AiStoryboardResult = { html: string; model: string; provider: ProviderId; fingerprint: string };
 export type AiStoryboardAsset = { id: string; blob: Blob; bounds: { x: number; y: number; w: number; h: number } };
@@ -143,7 +143,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
       body: JSON.stringify({ model: "gpt-5.4", max_output_tokens: 3000, input: [{ role: "user", content }] }),
       signal,
     });
-    const payload = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } };
+    const payload = await readProviderResponseJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } }>(response, "OpenAI");
     if (!response.ok) throw new Error(payload.error?.message || "OpenAI could not caption these images.");
     raw = payload.output_text ?? payload.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "";
   } else if (provider === "gemini") {
@@ -162,7 +162,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
       body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" } }),
       signal,
     });
-    const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } };
+    const payload = await readProviderResponseJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } }>(response, "Gemini");
     if (!response.ok) throw new Error(payload.error?.message || "Gemini could not caption these images.");
     raw = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
   } else if (provider === "anthropic") {
@@ -181,7 +181,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
       body: JSON.stringify({ model: "claude-3-5-sonnet-latest", max_tokens: 3000, temperature: 0.1, messages: [{ role: "user", content }] }),
       signal,
     });
-    const payload = await response.json() as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
+    const payload = await readProviderResponseJson<{ content?: Array<{ type: string; text?: string }>; error?: { message?: string } }>(response, "Anthropic");
     if (!response.ok) throw new Error(payload.error?.message || "Anthropic could not caption these images.");
     raw = payload.content?.filter((item) => item.type === "text").map((item) => item.text ?? "").join("") ?? "";
   } else {
@@ -284,7 +284,7 @@ async function callOpenAi(key: string, model: string, text: string, imageUrl: st
   if (!key) throw new Error("Unlock an OpenAI key before running Storyboard.");
   const content = [{ type: "input_text", text }, { type: "input_image", image_url: imageUrl, detail: "high" }, ...assets.flatMap(asset => [{ type: "input_text", text: `Original visual asset ${asset.id}` }, { type: "input_image", image_url: asset.dataUrl, detail: "high" }])];
   const response = await providerFetch("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, reasoning: { effort: "medium" }, max_output_tokens: 12000, input: [{ role: "user", content }] }), signal });
-  const data = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } };
+  const data = await readProviderResponseJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } }>(response, "OpenAI");
   if (!response.ok) throw new Error(data.error?.message || "OpenAI could not render this page.");
   return data.output_text ?? data.output?.flatMap(item => item.content ?? []).map(item => item.text ?? "").join("") ?? "";
 }
@@ -293,7 +293,7 @@ async function callGemini(key: string, model: string, text: string, mimeType: st
   if (!key) throw new Error("Unlock a Gemini key before running Storyboard.");
   const parts = [{ inlineData: { mimeType, data } }, { text }, ...assets.flatMap(asset => [{ text: `Original visual asset ${asset.id}` }, { inlineData: { mimeType: asset.mime, data: asset.base64 } }])];
   const response = await providerFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.2, maxOutputTokens: 12000 } }), signal });
-  const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } };
+  const payload = await readProviderResponseJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } }>(response, "Gemini");
   if (!response.ok) throw new Error(payload.error?.message || "Gemini could not render this page.");
   return payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? "").join("") ?? "";
 }
@@ -302,7 +302,7 @@ async function callAnthropic(key: string, model: string, text: string, mediaType
   if (!key) throw new Error("Unlock an Anthropic key before running Storyboard.");
   const content = [{ type: "image", source: { type: "base64", media_type: mediaType, data } }, { type: "text", text }, ...assets.flatMap(asset => [{ type: "text", text: `Original visual asset ${asset.id}` }, { type: "image", source: { type: "base64", media_type: asset.mime, data: asset.base64 } }])];
   const response = await providerFetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": key }, body: JSON.stringify({ model, max_tokens: 12000, temperature: 0.2, messages: [{ role: "user", content }] }), signal });
-  const payload = await response.json() as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
+  const payload = await readProviderResponseJson<{ content?: Array<{ type: string; text?: string }>; error?: { message?: string } }>(response, "Anthropic");
   if (!response.ok) throw new Error(payload.error?.message || "Anthropic could not render this page.");
   return payload.content?.filter(item => item.type === "text").map(item => item.text ?? "").join("") ?? "";
 }
