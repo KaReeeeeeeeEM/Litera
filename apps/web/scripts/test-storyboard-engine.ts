@@ -12,7 +12,7 @@ import {
   storyboardImagesAreReferenced,
   storyboardPaletteIsSafe,
 } from "../src/lib/device-pipeline/ai-storyboard-engine";
-import { createGeometryStoryboardHtml, suppressTableGridRules } from "../src/lib/device-pipeline/geometry-storyboard-engine";
+import { createGeometryStoryboardHtml, missingStoryboardAssetIds, suppressTableGridRules } from "../src/lib/device-pipeline/geometry-storyboard-engine";
 import { uniqueStoryboardSources } from "../src/lib/device-pipeline/storyboard-run-policy";
 import {
   inferCorrectAnswers,
@@ -31,6 +31,27 @@ const completedCaptions = completeImageCaptions(
 assert.equal(completedCaptions.length, 2, "captioning must return one usable caption for every extracted figure");
 assert.equal(completedCaptions[0]?.caption, "Picha ya nyanya tano mezani.");
 assert.match(completedCaptions[1]?.caption ?? "", /^Mchoro /, "missing Swahili captions need a language-matched accessible fallback");
+
+const visualInventory = [
+  { id: "page-8-image-1", kind: "image" as const, blob: new Blob(), bounds: { x: 10, y: 20, w: 80, h: 60 } },
+  { id: "page-8-image-2", kind: "image" as const, blob: new Blob(), bounds: { x: 120, y: 20, w: 80, h: 60 } },
+];
+assert.deepEqual(
+  missingStoryboardAssetIds(
+    '<main data-litera-page><figure data-asset-id="page-8-image-1"></figure></main>',
+    visualInventory,
+  ),
+  ["page-8-image-2"],
+  "page rerenders must detect every recovered source visual omitted by the returned HTML",
+);
+assert.deepEqual(
+  missingStoryboardAssetIds(
+    "<main data-litera-page><figure data-asset-id='page-8-image-1'></figure><figure data-asset-id='page-8-image-2'></figure></main>",
+    visualInventory,
+  ),
+  [],
+  "both quote styles must be recognised when checking rerendered visual coverage",
+);
 
 assert.deepEqual(
   inferCorrectAnswers(

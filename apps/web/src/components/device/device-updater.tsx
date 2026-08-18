@@ -169,8 +169,8 @@ export function DeviceUpdater() {
         {label}
       </Button>
       <Dialog onOpenChange={setOpen} open={open}>
-        <DialogContent className="overflow-hidden p-0 sm:!max-w-5xl">
-          <DialogHeader className="px-6 pt-6 sm:px-8 sm:pt-8">
+        <DialogContent className="z-[100] grid max-h-[calc(100dvh-1rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:!max-w-5xl">
+          <DialogHeader className="shrink-0 px-5 pt-5 sm:px-8 sm:pt-7">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">
                 <Sparkles data-icon="inline-start" />
@@ -189,7 +189,7 @@ export function DeviceUpdater() {
             </DialogDescription>
           </DialogHeader>
 
-          <ScrollArea className="max-h-[min(58dvh,34rem)] px-6 sm:px-8">
+          <ScrollArea className="min-h-0 px-5 sm:px-8">
             <div className="flex flex-col gap-5 py-5">
               <section aria-labelledby="update-highlights">
                 <div className="mb-3 flex items-center gap-2">
@@ -246,7 +246,7 @@ export function DeviceUpdater() {
           </ScrollArea>
 
           <Separator />
-          <DialogFooter className="px-6 py-4 sm:px-8">
+          <DialogFooter className="z-10 m-0 shrink-0 rounded-none bg-popover px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-8">
             {installedRelease ? <Button onClick={() => { setInstalledRelease(null); setOpen(false); }}>Continue to Litera</Button> : <><Button
               disabled={state === "installing"}
               onClick={() => setOpen(false)}

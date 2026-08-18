@@ -265,6 +265,9 @@ export function StoryboardWorkspace({
     setRerenderOpen(false);
     setRerendering(true);
     try {
+      await new Promise<void>((resolve) =>
+        window.requestAnimationFrame(() => resolve()),
+      );
       await onRerenderPage(
         page.pageNumber,
         hasRerenderFixes === "yes" ? rerenderInstructions : undefined,
@@ -449,7 +452,7 @@ export function StoryboardWorkspace({
               {canvas}
               {rerendering ? (
                 <div
-                  className="absolute inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-[2px]"
+                  className="absolute inset-0 z-40 flex items-center justify-center bg-background/80"
                   aria-live="polite"
                   aria-label={`Re-rendering page ${page?.pageNumber}`}
                 >

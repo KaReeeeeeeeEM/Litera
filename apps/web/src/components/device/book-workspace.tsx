@@ -27,6 +27,7 @@ import type {
   ReadingLevel,
   SpeechEntry,
   StageSlug,
+  StoryboardPage,
   StructuredPage,
   TextCatalogEntry,
 } from "@/components/device/device-types";
@@ -123,6 +124,7 @@ import { LanguageWorkspace } from "@/components/device/language-workspace";
 import {
   createFacsimileStoryboardHtml,
   createGeometryStoryboardHtml,
+  missingStoryboardAssetIds,
   isStoryboardNoise,
 } from "@/lib/device-pipeline/geometry-storyboard-engine";
 import {
@@ -403,6 +405,7 @@ export function BookWorkspace({
               providerConfigured={providerConfigured}
               providerKeys={providerKeys}
               rerenderingPages={rerenderingPages}
+              onRerenderStateChange={setRerenderingPages}
               onStoryboardPageReadyChange={setStoryboardPageReady}
             />
           ) : null}
@@ -510,6 +513,7 @@ function StagePage({
   providerConfigured,
   providerKeys,
   rerenderingPages,
+  onRerenderStateChange,
   onStoryboardPageReadyChange,
 }: {
   active: StageSlug;
@@ -517,6 +521,7 @@ function StagePage({
   providerConfigured: boolean;
   providerKeys?: ProviderKeys;
   rerenderingPages: number[];
+  onRerenderStateChange: (pages: number[]) => void;
   onStoryboardPageReadyChange: (ready: boolean) => void;
   onConfigureProvider: () => void;
   onSelectStage: (stage: StageSlug) => Promise<void>;
@@ -1985,14 +1990,47 @@ function StagePage({
         revision,
       ],
     };
-    const rendered = await rerenderPageFromAssistant(
-      prepared,
-      pageNumber,
-      requestedFixes,
-      `manual-page-${pageNumber}-${revision.id}`,
-      providerKeys,
-    );
-    await onChange(rendered, `Re-rendered storyboard page ${pageNumber}`);
+    const controller = new AbortController();
+    onRerenderStateChange([pageNumber]);
+    try {
+      // Let React paint the page-scoped progress state before PDF/image work
+      // starts on the main thread.
+      await yieldToBrowser();
+      let rendered: DeviceBook;
+      try {
+        rendered = await withStoryboardPageTimeout(
+          rerenderPageFromAssistant(
+            prepared,
+            pageNumber,
+            requestedFixes,
+            `manual-page-${pageNumber}-${revision.id}`,
+            providerKeys,
+            controller.signal,
+          ),
+          30_000,
+          controller.signal,
+        );
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        controller.abort(new DOMException("Instructed rerender timed out", "AbortError"));
+        await yieldToBrowser();
+        rendered = await withStoryboardPageTimeout(
+          rerenderPageFromAssistant(
+            prepared,
+            pageNumber,
+            undefined,
+            `manual-page-fallback-${pageNumber}-${revision.id}`,
+          ),
+          20_000,
+        );
+        toast.warning(
+          `Page ${pageNumber} took too long with instructions, so Litera completed a faithful local rebuild instead.`,
+        );
+      }
+      await onChange(rendered, `Re-rendered storyboard page ${pageNumber}`);
+    } finally {
+      onRerenderStateChange([]);
+    }
   }
   async function regenerateSingleSpeech(
     speech: SpeechEntry,
@@ -5096,12 +5134,14 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     `Restoring page ${sourcePage.pageNumber} image`,
     () => readablePageImage(book, extractedPage),
   );
+  await abortableUiDelay(0, signal);
   const assets = oralOnlyPage
     ? []
     : await storyboardPhase(
         `Restoring page ${sourcePage.pageNumber} visuals`,
         () => ensurePageAssets(book, { ...extractedPage, thumbnail }),
       );
+  await abortableUiDelay(0, signal);
   const renderPage = { ...extractedPage, thumbnail, assets };
   const sampledDecoration = oralOnlyPage
     ? {
@@ -5183,7 +5223,7 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     tocEntries: tocEntriesForPage,
     tocTitle,
   };
-  const storyboardPage = await storyboardPhase(
+  let storyboardPage: StoryboardPage = await storyboardPhase(
     `Rendering page ${sourcePage.pageNumber} as semantic HTML`,
     () =>
       providerKeys && visionProvider && userInstructions.trim()
@@ -5210,6 +5250,24 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
             geometryOptions,
           ),
   );
+  const requiredVisuals = semanticStoryboardAssets(renderPage.assets ?? []);
+  const missingVisualIds = missingStoryboardAssetIds(
+    storyboardPage.html,
+    requiredVisuals,
+  );
+  if (missingVisualIds.length) {
+    signal?.throwIfAborted();
+    const faithfulPage = await createGeometryStoryboardPage(
+      effectiveSourcePage,
+      renderPage,
+      geometryOptions,
+    );
+    storyboardPage = restoreMissingStoryboardVisuals(
+      storyboardPage,
+      faithfulPage,
+      missingVisualIds,
+    );
+  }
   const savedCaptions = (book.imageCaptions ?? [])
     .filter((caption) => caption.pageNumber === sourcePage.pageNumber)
     .map((caption) => ({
@@ -5219,6 +5277,38 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
   return savedCaptions.length
     ? { ...applyImageCaptions(storyboardPage, savedCaptions), digitalPageNumber }
     : { ...storyboardPage, digitalPageNumber };
+}
+
+function restoreMissingStoryboardVisuals(
+  rendered: StoryboardPage,
+  faithful: StoryboardPage,
+  missingIds: string[],
+) {
+  const missing = new Set(missingIds);
+  const output = new DOMParser().parseFromString(rendered.html, "text/html");
+  const source = new DOMParser().parseFromString(faithful.html, "text/html");
+  const outputMain = output.querySelector("main[data-litera-page]");
+  if (!outputMain) return faithful;
+  for (const id of missing) {
+    const escaped = CSS.escape(id);
+    const sourceVisual = source.querySelector<HTMLElement>(
+      `[data-asset-id="${escaped}"]`,
+    );
+    if (sourceVisual) outputMain.append(sourceVisual.cloneNode(true));
+  }
+  const restoredBlocks = faithful.blocks.filter(
+    (block) => block.assetId && missing.has(block.assetId),
+  );
+  return {
+    ...rendered,
+    html: `<!doctype html>${output.documentElement.outerHTML}`,
+    blocks: [
+      ...rendered.blocks.filter(
+        (block) => !block.assetId || !missing.has(block.assetId),
+      ),
+      ...restoredBlocks,
+    ].sort((a, b) => a.order - b.order),
+  };
 }
 
 function isWorkedExamplePrompt(prompt: string, sourceText: string) {
@@ -5280,7 +5370,9 @@ async function rerenderPageFromAssistant(
   instruction: string | undefined,
   promptId: string,
   providerKeys?: ProviderKeys,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const structuredPages = uniqueStoryboardSources(book.structuredPages);
   const sourcePage = structuredPages.find(
     (page) => page.pageNumber === pageNumber,
@@ -5295,6 +5387,7 @@ async function rerenderPageFromAssistant(
   const publicationPalette = await derivePublicationPalette(
     book,
     structuredPages,
+    signal,
   );
   let storyboardPage;
   try {
@@ -5308,6 +5401,7 @@ async function rerenderPageFromAssistant(
       visionProvider:
         instruction && providerKeys ? selectVisionProvider(providerKeys) : undefined,
       userInstructions: instruction,
+      signal,
     });
   } catch (error) {
     if (!instruction || isAbortError(error)) throw error;
@@ -5317,6 +5411,7 @@ async function rerenderPageFromAssistant(
       structuredPages,
       tableOfContents,
       publicationPalette,
+      signal,
     });
     toast.warning(
       `The instructed AI render was unavailable. Page ${pageNumber} was rebuilt faithfully with the local engine instead.`,
@@ -5340,6 +5435,7 @@ async function rerenderPageFromAssistant(
       providerKeys,
       visionProvider: selectVisionProvider(providerKeys),
       userInstructions: `${instruction}\n\nThe previous attempt returned unchanged HTML. Make the requested visible and semantic changes while preserving source fidelity.`,
+      signal,
     });
   }
   // A safe geometry fallback can be byte-for-byte identical even though the
@@ -5352,10 +5448,10 @@ async function rerenderPageFromAssistant(
     ),
     storyboardPage,
   ].sort((a, b) => a.pageNumber - b.pageNumber);
-  const storyboardCss =
-    storyboardPage.renderSource === "ai"
-      ? await compileStoryboardTailwindCss(storyboardPages)
-      : book.storyboardCss;
+  // A page repair must remain page-scoped. Recompiling CSS from every page
+  // made a one-page rerender scale with the entire book and could lock up the
+  // UI. AI and local pages already contain their required page styles.
+  const storyboardCss = book.storyboardCss;
   const next = {
     ...book,
     storyboardPages,
@@ -5467,34 +5563,7 @@ async function createGeometryStoryboardPage(
   extractedPage: NonNullable<DeviceBook["extractedPages"]>[number],
   options: GeometryPageOptions,
 ) {
-  const allAssets = extractedPage.assets ?? [];
-  const composedExamples = allAssets.filter(
-    (asset) =>
-      asset.id.includes("composite-example") ||
-      asset.id.includes("composite-activity-diagram"),
-  );
-  const semanticAssets = deduplicateStoryboardAssets(
-    allAssets.filter((asset) => {
-      if (!isMeaningfulStoryboardAsset(asset)) return false;
-      if (
-        asset.id.includes("composite-example") ||
-        asset.id.includes("composite-activity-diagram")
-      )
-        return true;
-      const centerX = asset.bounds.x + asset.bounds.w / 2;
-      const centerY = asset.bounds.y + asset.bounds.h / 2;
-      // A composed example is the authoritative visual for that printed region.
-      // Supplying its nested PDF paint fragments as separate images causes the
-      // model to stretch decorative slivers into full-width illustrations.
-      return !composedExamples.some(
-        (composite) =>
-          centerX >= composite.bounds.x &&
-          centerX <= composite.bounds.x + composite.bounds.w &&
-          centerY >= composite.bounds.y &&
-          centerY <= composite.bounds.y + composite.bounds.h,
-      );
-    }),
-  );
+  const semanticAssets = semanticStoryboardAssets(extractedPage.assets ?? []);
   const base = createStoryboardPage(
     sourcePage,
     { ...extractedPage, assets: semanticAssets },
@@ -5537,6 +5606,36 @@ async function createGeometryStoryboardPage(
     renderProvider: "litera-semantic-layout",
     renderModel: "source-geometry",
   };
+}
+
+function semanticStoryboardAssets(allAssets: ExtractedPageAsset[]) {
+  const composedExamples = allAssets.filter(
+    (asset) =>
+      asset.id.includes("composite-example") ||
+      asset.id.includes("composite-activity-diagram"),
+  );
+  return deduplicateStoryboardAssets(
+    allAssets.filter((asset) => {
+      if (!isMeaningfulStoryboardAsset(asset)) return false;
+      if (
+        asset.id.includes("composite-example") ||
+        asset.id.includes("composite-activity-diagram")
+      )
+        return true;
+      const centerX = asset.bounds.x + asset.bounds.w / 2;
+      const centerY = asset.bounds.y + asset.bounds.h / 2;
+      // A composed example is the authoritative visual for that printed region.
+      // Supplying its nested PDF paint fragments as separate images causes the
+      // model to stretch decorative slivers into full-width illustrations.
+      return !composedExamples.some(
+        (composite) =>
+          centerX >= composite.bounds.x &&
+          centerX <= composite.bounds.x + composite.bounds.w &&
+          centerY >= composite.bounds.y &&
+          centerY <= composite.bounds.y + composite.bounds.h,
+      );
+    }),
+  );
 }
 
 function isMeaningfulStoryboardAsset(asset: ExtractedPageAsset) {

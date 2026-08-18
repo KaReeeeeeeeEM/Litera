@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  CirclePlay,
   Hand,
   Languages,
   List,
@@ -401,6 +402,17 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
         </Popover>
         <div className="flex shrink-0 items-center gap-0.5 px-1"><Button aria-label="Previous page" disabled={index === 0} onClick={() => changePage(index - 1)} size="icon" variant="ghost"><ChevronLeft /></Button><span className="min-w-16 px-2 text-center text-base tabular-nums"><span className="font-medium">{page.digitalPageNumber ?? index + 1}</span><span className="text-muted-foreground"> / {pages.length}</span></span><Button aria-label="Next page" disabled={index === pages.length - 1} onClick={() => changePage(index + 1)} size="icon" variant="ghost"><ChevronRight /></Button></div>
         <div className={`flex flex-1 items-center justify-end gap-2 pl-1 ${bottomBarDark ? "[&_button]:text-zinc-100 [&_button:hover]:bg-white/10 [&_button:hover]:text-white" : ""}`}>
+          <Button
+            aria-label={autoplay ? "Turn off automatic narration" : "Turn on automatic narration"}
+            aria-pressed={autoplay}
+            className={autoplay ? bottomBarDark ? "bg-white/10" : "bg-accent" : ""}
+            onClick={() => setAutoplay((value) => !value)}
+            size="icon"
+            title={autoplay ? "Autoplay on" : "Autoplay off"}
+            variant="ghost"
+          >
+            <CirclePlay className={autoplay ? "text-emerald-400" : ""} />
+          </Button>
           <Popover><PopoverTrigger asChild><Button aria-label="Glossary" disabled={!book.glossary?.length} size="icon" variant="ghost"><BookOpen /></Button></PopoverTrigger><PopoverContent align="end" className={`w-80 ${panelTheme}`}><p className="mb-2 font-medium">Glossary</p><dl className="flex max-h-64 flex-col gap-3 overflow-auto">{(book.glossary ?? []).map((item) => <div key={item.term}><dt className="font-medium">{item.term}</dt><dd className="text-sm text-muted-foreground">{item.definition}</dd></div>)}</dl></PopoverContent></Popover>
           <Popover open={playing} onOpenChange={(open) => { if (!open && playing) stopSpeech(); }}><PopoverTrigger asChild><Button aria-label={playing ? "Deactivate text to speech" : "Activate text to speech"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button></PopoverTrigger><PopoverContent align="end" className={`w-96 ${panelTheme}`}><div className="grid gap-3"><div className="flex items-center justify-center"><Button aria-label="Previous narration" disabled={activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button><Button aria-label={playing ? "Pause narration" : "Play narration"} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button><Button aria-label="Next narration" disabled={activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button><Button aria-label="Stop narration" onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button></div><div className="grid w-full grid-cols-2 gap-3"><label className="grid min-w-0 gap-1 text-xs"><span>Playback speed</span><Select onValueChange={(value) => { setPlaybackRate(value); if (audio.current) audio.current.playbackRate = Number(value); }} value={playbackRate}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.75">0.75×</SelectItem><SelectItem value="1">Normal</SelectItem><SelectItem value="1.25">1.25×</SelectItem><SelectItem value="1.5">1.5×</SelectItem></SelectContent></Select></label><label className="grid min-w-0 gap-1 text-xs"><span>Volume</span><Select onValueChange={(value) => { setVolume(value); if (audio.current) audio.current.volume = Number(value); }} value={volume}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.5">50%</SelectItem><SelectItem value="0.75">75%</SelectItem><SelectItem value="1">100%</SelectItem></SelectContent></Select></label></div></div></PopoverContent></Popover>
           {book.signVideos?.length ? <Popover><PopoverTrigger asChild><Button aria-label="Sign language" disabled={!pageSignVideos.length} size="icon" variant="ghost"><Hand /></Button></PopoverTrigger><PopoverContent align="end" className={`w-72 ${panelTheme}`}><p className="font-medium">Sign language</p><p className="mt-1 text-sm text-muted-foreground">{pageSignVideos.length ? `${pageSignVideos.length} signed video ${pageSignVideos.length === 1 ? "is" : "are"} mapped to this page.` : "No signed video is mapped to this page."}</p></PopoverContent></Popover> : null}
