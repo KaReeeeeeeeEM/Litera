@@ -514,6 +514,13 @@ export function createGeometryStoryboardHtml(
     pageHeight: height,
     activityPage: activityPage && !oralOnly,
   });
+  const repeatedVectorBoxTargets = buildRepeatedVectorAnswerBoxTargets({
+    layoutBlocks: page.layoutBlocks ?? [],
+    textBlocks: contentBlocks,
+    pageWidth: width,
+    pageHeight: height,
+    activityPage: activityPage && !oralOnly,
+  });
   const labeledItemTargets = oralOnly
     ? []
     : buildLabeledItemAnswerTargets({
@@ -603,6 +610,7 @@ export function createGeometryStoryboardHtml(
       evidence: "semantically-aligned-whitespace",
     }))),
     ...repeatedBoxTargets,
+    ...repeatedVectorBoxTargets,
     ...labeledItemTargets,
     ...(illustratedEquationTable ? [] : proseQuestionTargets),
     ...fractionDiagramTargets,
@@ -628,7 +636,7 @@ export function createGeometryStoryboardHtml(
   const inlineAnswerTargets = useDenseQuestionFlow
     ? answerTargets.filter((target) => target.evidence !== "numbered-prose-question")
     : answerTargets;
-  const naturalAnswerStyle = `<style data-litera-answer-style>.source-answer-line input{border:0;border-bottom:.13cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 62%,#5f5b52);border-radius:.18cqw .18cqw 0 0;background:color-mix(in srgb,${safeColor(decoration.accent)} 5%,transparent);color:#171717;padding:0 .18cqw;font-weight:500;box-shadow:none}.source-answer-line[data-placement-evidence="numbered-prose-question"] input{border:.12cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 48%,#777);border-radius:.55cqw;background:color-mix(in srgb,${safeColor(decoration.accent)} 4%,#fff)}.source-answer-line input:hover{background:color-mix(in srgb,${safeColor(decoration.accent)} 8%,transparent)}.source-answer-line input:focus{border-bottom:.2cqw solid ${safeColor(decoration.accent)};background:color-mix(in srgb,${safeColor(decoration.accent)} 10%,#fff);box-shadow:0 .14cqw 0 color-mix(in srgb,${safeColor(decoration.accent)} 32%,transparent)}.source-answer-line input[data-answer-state="correct"]{border-bottom-color:#16803c;background:color-mix(in srgb,#16803c 9%,transparent)}.source-answer-line input[data-answer-state="incorrect"]{border-bottom-color:#b42318;background:color-mix(in srgb,#b42318 7%,transparent)}</style>`;
+  const naturalAnswerStyle = `<style data-litera-answer-style>.source-answer-line input{border:0;border-bottom:.13cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 62%,#5f5b52);border-radius:.18cqw .18cqw 0 0;background:color-mix(in srgb,${safeColor(decoration.accent)} 5%,transparent);color:#171717;padding:0 .18cqw;font-weight:500;box-shadow:none}.source-answer-line[data-placement-evidence="numbered-prose-question"] input,.source-answer-line[data-placement-evidence*="answer-box"] input{border:.12cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 70%,#777);border-radius:.16cqw;background:color-mix(in srgb,${safeColor(decoration.accent)} 2%,#fff)}.source-answer-line input:hover{background:color-mix(in srgb,${safeColor(decoration.accent)} 8%,transparent)}.source-answer-line input:focus{border-bottom:.2cqw solid ${safeColor(decoration.accent)};background:color-mix(in srgb,${safeColor(decoration.accent)} 10%,#fff);box-shadow:0 .14cqw 0 color-mix(in srgb,${safeColor(decoration.accent)} 32%,transparent)}.source-answer-line input[data-answer-state="correct"]{border-bottom-color:#16803c;background:color-mix(in srgb,#16803c 9%,transparent)}.source-answer-line input[data-answer-state="incorrect"]{border-bottom-color:#b42318;background:color-mix(in srgb,#b42318 7%,transparent)}</style>`;
   const answerLines = naturalAnswerStyle + inlineAnswerTargets
     .map((block, index) => {
       const textRule = block.type === "text";
@@ -1485,7 +1493,47 @@ function renderTableOfContents(
   const usesLeaders = blocks.some((block) => /\.{3,}/.test(block.text ?? ""));
   const navStyle = `left:${percent(left,pageWidth)}%;top:${percent(top,pageHeight)}%;width:${boundedPercent(left,right-left,pageWidth)}%;height:${boundedPercent(top,bottom-top,pageHeight)}%`;
   const rowGap = Math.max(.35, Math.min(rowSize * .7, ((bottom - top) / pageHeight * 100 - titleSize * 2.2) / Math.max(1, entries.length) - rowSize * 1.25));
-  return `<nav class="digital-toc" style="${navStyle};color:${rowColor}" aria-labelledby="digital-toc-title"><h1 id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;color:${titleColor};font-weight:${heading?.font?.weight ?? 700};margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${rowGap.toFixed(2)}cqw">${entries.map((entry) => `<li data-level="${entry.level}" style="gap:${Math.max(.45,rowSize*.35).toFixed(2)}cqw;font-size:${rowSize.toFixed(2)}cqw;padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title.replace(/\s*\.{2,}\s*\d{1,4}\s*$/, ""))}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`).join("")}</ol></nav>`;
+  return `<nav class="digital-toc" style="${navStyle};color:${rowColor}" aria-labelledby="digital-toc-title"><h1 id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;color:${titleColor};font-weight:${heading?.font?.weight ?? 700};margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${rowGap.toFixed(2)}cqw">${entries.map((entry) => {
+    const source = bestTocSourceBlock(entry.title, rows);
+    const sourceSize = Math.max(
+      1.05,
+      (((source?.font?.size ?? rowSizes.sort((a, b) => a - b)[Math.floor(rowSizes.length / 2)] ?? 12)) / pageWidth) * 100,
+    );
+    const sourceColor = safeColor(source?.font?.color ?? rowColor);
+    const sourceWeight = /bold|black|heavy|semibold/i.test(
+      `${source?.font?.weight ?? ""} ${source?.font?.name ?? ""}`,
+    )
+      ? 700
+      : entry.level === 1
+        ? 700
+        : 400;
+    return `<li data-level="${entry.level}" style="gap:${Math.max(.45,sourceSize*.35).toFixed(2)}cqw;font-size:${sourceSize.toFixed(2)}cqw;font-weight:${sourceWeight};color:${sourceColor};padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title.replace(/\s*\.{2,}\s*\d{1,4}\s*$/, ""))}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`;
+  }).join("")}</ol></nav>`;
+}
+
+function bestTocSourceBlock(title: string, blocks: ExtractedLayoutBlock[]) {
+  const tokens = (value: string) =>
+    new Set(
+      (value
+        .replace(/\.{2,}\s*(?:\d{1,4}|[ivxlcdm]+)\s*$/i, "")
+        .toLocaleLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? [])
+        .filter((token) => token.length > 1),
+    );
+  const wanted = tokens(title);
+  if (!wanted.size) return undefined;
+  return blocks
+    .map((block) => {
+      const candidate = tokens(block.text ?? "");
+      const matches = [...wanted].filter((token) => candidate.has(token)).length;
+      return {
+        block,
+        score: matches / Math.max(wanted.size, candidate.size),
+        matches,
+      };
+    })
+    .filter((item) => item.matches > 0)
+    .sort((a, b) => b.score - a.score || b.matches - a.matches)[0]?.block;
 }
 
 function renderSourceFolio(
@@ -1654,6 +1702,120 @@ function buildRepeatedAnswerBoxTargets({
         evidence: "repeated-printed-answer-box",
         correctAnswer: label ? numberWords[label] : undefined,
         bbox: { ...asset.bounds },
+      };
+    });
+}
+
+function buildRepeatedVectorAnswerBoxTargets({
+  layoutBlocks,
+  textBlocks,
+  pageWidth,
+  pageHeight,
+  activityPage,
+}: {
+  layoutBlocks: ExtractedLayoutBlock[];
+  textBlocks: ExtractedLayoutBlock[];
+  pageWidth: number;
+  pageHeight: number;
+  activityPage: boolean;
+}) {
+  const instruction = textBlocks.map((block) => block.text ?? "").join(" ");
+  if (
+    !activityPage ||
+    !/\b(?:write|fill|complete|answer|andika|jaza)\b/i.test(instruction)
+  )
+    return [];
+  const horizontal = layoutBlocks.filter(
+    (block) =>
+      block.type === "image" &&
+      block.bbox.w / pageWidth >= 0.05 &&
+      block.bbox.w / pageWidth <= 0.3 &&
+      block.bbox.h <= Math.max(3, pageHeight * 0.006),
+  );
+  const vertical = layoutBlocks.filter(
+    (block) =>
+      block.type === "image" &&
+      block.bbox.h / pageHeight >= 0.025 &&
+      block.bbox.h / pageHeight <= 0.1 &&
+      block.bbox.w <= Math.max(3, pageWidth * 0.006),
+  );
+  const toleranceX = pageWidth * 0.012;
+  const toleranceY = pageHeight * 0.009;
+  const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (const top of horizontal) {
+    const bottom = horizontal
+      .filter(
+        (candidate) =>
+          candidate.bbox.y > top.bbox.y + pageHeight * 0.02 &&
+          candidate.bbox.y - top.bbox.y <= pageHeight * 0.1 &&
+          Math.abs(candidate.bbox.x - top.bbox.x) <= toleranceX &&
+          Math.abs(candidate.bbox.w - top.bbox.w) <= toleranceX,
+      )
+      .sort((a, b) => a.bbox.y - b.bbox.y)[0];
+    if (!bottom) continue;
+    const height = bottom.bbox.y - top.bbox.y;
+    const left = vertical.some(
+      (candidate) =>
+        Math.abs(candidate.bbox.x - top.bbox.x) <= toleranceX &&
+        Math.abs(candidate.bbox.y - top.bbox.y) <= toleranceY &&
+        Math.abs(candidate.bbox.h - height) <= toleranceY * 2,
+    );
+    const rightX = top.bbox.x + top.bbox.w;
+    const right = vertical.some(
+      (candidate) =>
+        Math.abs(candidate.bbox.x - rightX) <= toleranceX &&
+        Math.abs(candidate.bbox.y - top.bbox.y) <= toleranceY &&
+        Math.abs(candidate.bbox.h - height) <= toleranceY * 2,
+    );
+    if (!left || !right) continue;
+    const box = { x: top.bbox.x, y: top.bbox.y, w: top.bbox.w, h: height };
+    if (!boxes.some((candidate) => rectangleIoU(candidate, box) > 0.7))
+      boxes.push(box);
+  }
+  const groups = boxes.reduce<Array<typeof boxes>>((output, box) => {
+    const group = output.find((items) => {
+      const sample = items[0]!;
+      return (
+        Math.abs(sample.w - box.w) <= pageWidth * 0.025 &&
+        Math.abs(sample.h - box.h) <= pageHeight * 0.018
+      );
+    });
+    if (group) group.push(box);
+    else output.push([box]);
+    return output;
+  }, []);
+  const repeated = groups.sort((a, b) => b.length - a.length)[0] ?? [];
+  if (repeated.length < 3) return [];
+  const numberWords: Record<string, string> = {
+    zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5",
+    six: "6", seven: "7", eight: "8", nine: "9", ten: "10",
+  };
+  return repeated
+    .sort((a, b) => a.y - b.y || a.x - b.x)
+    .map((box) => {
+      const label = textBlocks
+        .filter((block) => {
+          const centerY = block.bbox.y + block.bbox.h / 2;
+          return (
+            block.bbox.x + block.bbox.w <= box.x + pageWidth * 0.04 &&
+            Math.abs(centerY - (box.y + box.h / 2)) <=
+              Math.max(box.h, pageHeight * 0.025)
+          );
+        })
+        .sort(
+          (a, b) =>
+            box.x - (a.bbox.x + a.bbox.w) -
+            (box.x - (b.bbox.x + b.bbox.w)),
+        )[0]?.text
+        ?.trim()
+        .toLocaleLowerCase();
+      return {
+        type: "image" as const,
+        text: label,
+        confidence: 0.96,
+        evidence: "repeated-vector-answer-box",
+        correctAnswer: label ? numberWords[label] : undefined,
+        bbox: box,
       };
     });
 }

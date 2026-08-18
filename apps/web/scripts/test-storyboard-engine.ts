@@ -1148,6 +1148,61 @@ assert.match(
   "TOC entries must navigate the containing Litera storyboard instead of the srcDoc shell",
 );
 
+const styledTocHtml = createGeometryStoryboardHtml(
+  {
+    number: 3,
+    width: 500,
+    height: 700,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 180, y: 50, w: 140, h: 20 }, text: "Table of contents", font: { size: 18, color: "#00aeb7", weight: "bold" } },
+      { type: "text", bbox: { x: 70, y: 120, w: 120, h: 18 }, text: "Chapter One", font: { size: 15, color: "#00aeb7", weight: "bold" } },
+      { type: "text", bbox: { x: 70, y: 148, w: 350, h: 18 }, text: "Comparing number of objects ................ 1", font: { size: 12, color: "#252525" } },
+    ],
+  },
+  {},
+  {
+    tocTitle: "Table of contents",
+    tocEntries: [
+      { title: "Chapter One", pageNumber: 7, level: 1 },
+      { title: "Comparing number of objects", pageNumber: 7, level: 2 },
+    ],
+  },
+);
+assert.match(styledTocHtml, /font-size:3\.00cqw;font-weight:700;color:#00aeb7/);
+assert.match(styledTocHtml, /font-size:2\.40cqw;font-weight:400;color:#252525/);
+
+const vectorAnswerBoxesHtml = createGeometryStoryboardHtml(
+  {
+    number: 20,
+    width: 500,
+    height: 700,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 60, y: 65, w: 90, h: 18 }, text: "Exercise 2", font: { size: 14 } },
+      { type: "text", bbox: { x: 60, y: 95, w: 260, h: 18 }, text: "Write the following numbers in numerals.", font: { size: 12 } },
+      ...["two", "four", "seven"].flatMap((word, index) => {
+        const y = 150 + index * 80;
+        return [
+          { type: "text" as const, bbox: { x: 80, y: y + 15, w: 45, h: 16 }, text: word, font: { size: 12 } },
+          { type: "image" as const, bbox: { x: 220, y, w: 82, h: 2 } },
+          { type: "image" as const, bbox: { x: 220, y: y + 48, w: 82, h: 2 } },
+          { type: "image" as const, bbox: { x: 220, y, w: 2, h: 48 } },
+          { type: "image" as const, bbox: { x: 302, y, w: 2, h: 48 } },
+        ];
+      }),
+    ],
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#00aeb7" } },
+);
+assert.equal(
+  (vectorAnswerBoxesHtml.match(/data-placement-evidence="repeated-vector-answer-box"/g) ?? []).length,
+  3,
+  "repeated vector rectangles in a written exercise must become in-place answer controls",
+);
+assert.match(vectorAnswerBoxesHtml, /data-correct-answer="2"/);
+assert.match(vectorAnswerBoxesHtml, /data-correct-answer="4"/);
+assert.match(vectorAnswerBoxesHtml, /data-correct-answer="7"/);
+
 const arithmeticHtml = createGeometryStoryboardHtml(
   {
     number: 13,
