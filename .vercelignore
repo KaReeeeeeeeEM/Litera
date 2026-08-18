@@ -1,1 +1,13 @@
 tmp/
+node_modules/
+.next/
+apps/web/.next/
+target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/dist/
+.playwright-cli/
+output/
+*.log
+.env
+.env.*
