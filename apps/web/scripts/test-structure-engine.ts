@@ -330,4 +330,15 @@ assert.equal(
   "font hierarchy must produce a stable heading level",
 );
 
+const lineMatchingExercise = structurePageText(
+  14,
+  "Exercise 5\nDraw a line to match the objects and their number.",
+);
+assert.equal(
+  lineMatchingExercise.activities.length,
+  1,
+  "draw-a-line matching instructions must remain interactive activities",
+);
+assert.equal(lineMatchingExercise.activities[0]?.type, "matching");
+
 console.log("Structure engine regression tests passed.");

@@ -371,7 +371,7 @@ function activityType(text: string): ActivityType {
   )
     return "multiple-choice";
   if (/(draw|chora).*(?:clock|saa|muda)/i.test(text)) return "short-answer";
-  if (/(draw|chora|colour|color)/i.test(text)) return "drawing";
+  if (/(draw|chora|colour|color|trace|join(?:ing)? the dots|copy|practise writing|practice writing|fuatisha|unganisha nukta)/i.test(text)) return "drawing";
   if (/(discuss|jadili|in (?:pairs?|groups?)|kwa vikundi|kikundi cha)/i.test(text))
     return "discussion";
   return "short-answer";
@@ -562,7 +562,7 @@ export function detectActivities(
     .filter(Boolean);
   const activityHeading = activityHeadingPattern;
   const imperative =
-    /^(?:\d+[.)]\s*)?(?:answer|write|fill|complete|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
+    /^(?:\d+[.)]\s*)?(?:answer|write|fill|complete|count|mark|shade|draw|colour|color|trace|copy|join|practise|practice|andika|badili|calculate|chagua|chora|fuatisha|unganisha|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|pima|record|rekodi|select|solve|taja|weka)\b/i;
   const itemStart = /^(?:\d+[.)]|\([a-z]\)|[a-z][.)])\s+/i;
   const exampleHeading = /^(?:mfano|example)(?:\s+(?:wa\s+)?\d+)?\b/i;
   const oralInstruction =
@@ -576,7 +576,7 @@ export function detectActivities(
   const candidates: string[] = [];
   const responsePrompt = (value: string) =>
     !isMetadataIdentifier(value) &&
-    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:answer|write|fill|complete|count|mark|shade|andika|badili|calculate|chagua|chora|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
+    /\?|(?:[_–—-]\s*){3,}|\d\s*[+×÷−-]\s*\d|\b(?:true or false|kweli au si kweli|answer|write|fill|complete|count|mark|shade|draw|colour|color|trace|copy|join|practise|practice|andika|badili|calculate|choose|chagua|chora|fuatisha|unganisha|compare|describe|discuss|eleza|find|hesabu|identify|jadili|jaza|jibu|linganisha|match|measure|oanisha|orodhesha|pima|record|rekodi|select|solve|taja|weka)\b/i.test(value);
   const flush = () => {
     const prompt = current.replace(/\s+/g, " ").trim();
     const readOnlyInstruction =
@@ -586,7 +586,9 @@ export function detectActivities(
       !currentIsItem &&
       /\b(?:true or false|kweli au si kweli|match|matching|oanisha|linganisha|choose|select|chagua)\b/i.test(
         prompt,
-      );
+      ) &&
+      !/\b(?:true or false|kweli au si kweli)\s*:\s*\S/i.test(prompt) &&
+      !/\b[A-D][.)]\s*\S/i.test(prompt);
     if (/:$/.test(prompt) || instructionOnly) instructionContext = prompt;
     else if (
       !readOnlyInstruction &&
@@ -674,6 +676,15 @@ export function detectActivities(
       inActivity = false;
   }
   flush();
+
+  // Picture-to-number and word-to-number matching pages often contain only
+  // the printed instruction plus visual columns. Keep that instruction as an
+  // activity even when PDF text extraction yields no numbered text items.
+  if (
+    candidates.length === 0 &&
+    /\b(?:match|matching|oanisha|linganisha)\b/i.test(instructionContext)
+  )
+    candidates.push(instructionContext);
 
   const numberedRegions = layoutBlocks
     .filter((block) => block.type === "text" && /^\d{1,2}[.)](?:\s+\S.*)?$/.test(block.text?.trim() ?? ""))

@@ -73,7 +73,7 @@ export function createGeometryStoryboardHtml(
   // Composed examples are genuine teaching diagrams recovered from a bounded
   // source region, not page screenshots. They can contain printed labels, so
   // keep those exact visuals while retaining duplicate text only for AT.
-  const visibleAssets = deduplicateVisualAssets(
+  const deduplicatedAssets = deduplicateVisualAssets(
     (page.assets ?? []).filter(
       (asset) =>
         !asset.containsText ||
@@ -81,6 +81,17 @@ export function createGeometryStoryboardHtml(
         asset.id.includes("composite-activity-diagram"),
     ),
   );
+  const activityComposites = deduplicatedAssets.filter((asset) =>
+    asset.id.includes("composite-activity-diagram"),
+  );
+  const visibleAssets = activityComposites.length
+    ? deduplicatedAssets.filter((asset) =>
+        asset.id.includes("composite-activity-diagram") ||
+        !activityComposites.some((composite) =>
+          boundsOverlap(composite.bounds, asset.bounds) > 0.18,
+        ),
+      )
+    : deduplicatedAssets;
   const composedExampleBounds = visibleAssets
     .filter(
       (asset) =>
@@ -164,6 +175,13 @@ export function createGeometryStoryboardHtml(
   const fractionComponents = new Set(
     fractionRows.flatMap((row) => row.components),
   );
+  const examplePanelBounds = buildExamplePanels(rawTextBlocks, width, height);
+  const activityPanelBounds = buildActivityPanels(
+    rawTextBlocks,
+    width,
+    height,
+    visibleAssets,
+  );
   // Never invent panels from generic PDF image bounds. Real page decoration
   // is retained only when it was extracted as an actual image asset.
   const semanticDecorations = "";
@@ -220,7 +238,14 @@ export function createGeometryStoryboardHtml(
       const activityHeading =
         activityHeadingPattern.test(block.text?.trim() ?? "");
       const exampleHeading = isNumberedExampleHeading(block);
-      const renderedWidth = activityHeading
+      const chapterHeading = /^(?:chapter|sura)\b/i.test(block.text?.trim() ?? "") && block.bbox.y < height * 0.28;
+      const chapterSubtitle = !chapterHeading && block.bbox.y < height * 0.3 && rawTextBlocks.some((candidate) =>
+        /^(?:chapter|sura)\b/i.test(candidate.text?.trim() ?? "") &&
+        candidate.bbox.y < block.bbox.y &&
+        block.bbox.y - candidate.bbox.y < height * 0.12 &&
+        Math.abs((candidate.bbox.x + candidate.bbox.w / 2) - (block.bbox.x + block.bbox.w / 2)) < width * 0.18,
+      );
+      let renderedWidth = activityHeading
         ? Math.min(
             width - block.bbox.x - width * 0.055,
             Math.max(block.bbox.w, width * 0.18),
@@ -228,6 +253,42 @@ export function createGeometryStoryboardHtml(
         : exampleHeading
           ? Math.min(width - block.bbox.x, Math.max(block.bbox.w, width * 0.23))
           : block.bbox.w;
+      const tracingInstruction =
+        /\b(?:trace|join(?:ing)?\s+the\s+dots|practi[cs]e\s+writing|copy|fuatisha|unganisha\s+nukta)\b/i.test(
+          block.text ?? "",
+        );
+      const instructionHeadingAbove =
+        /\b(?:write|read|count|fill|identify|match|choose|draw|trace|study|complete|answer|subtract|add|colour|color|copy|andika|jibu|hesabu|chagua|unganisha)\b/i.test(
+          block.text ?? "",
+        )
+          ? contentBlocks
+              .filter((candidate) =>
+                activityHeadingPattern.test(candidate.text?.trim() ?? "") &&
+                candidate.bbox.y <= block.bbox.y &&
+                block.bbox.y - candidate.bbox.y < height * .065,
+              )
+              .sort((a, b) => b.bbox.y - a.bbox.y)[0]
+          : undefined;
+      if (tracingInstruction || instructionHeadingAbove) {
+        const containingPanel = activityPanelBounds.find((panel) => {
+          const centerX = block.bbox.x + block.bbox.w / 2;
+          const centerY = block.bbox.y + block.bbox.h / 2;
+          return centerX >= panel.x && centerX <= panel.x + panel.w && centerY >= panel.y && centerY <= panel.y + panel.h;
+        });
+        renderedWidth = containingPanel
+          ? Math.max(
+              width * .12,
+              containingPanel.x + containingPanel.w - block.bbox.x - width * .025,
+            )
+          : Math.max(block.bbox.w, width - block.bbox.x - width * .09);
+      }
+      const headingAbove = instructionHeadingAbove;
+      const renderedTop = headingAbove
+        ? Math.max(
+            block.bbox.y,
+            headingAbove.bbox.y + headingAbove.bbox.h + height * .006,
+          )
+        : block.bbox.y;
       const estimatedTextWidth = Math.max(
         size,
         [...(block.text ?? "")].reduce(
@@ -262,16 +323,23 @@ export function createGeometryStoryboardHtml(
           ? size
           : size;
       const horizontalScale =
-        numericBlock || activityHeading || exampleHeading || wordFragment
+        activityHeading || exampleHeading
           ? 1
           : Math.min(
               1,
-              Math.max(0.72, renderedWidth / estimatedTextWidth),
+              Math.max(
+                wordFragment ? 0.72 : 0.28,
+                renderedWidth / (estimatedTextWidth * 1.06),
+              ),
             );
       const className = activityHeading
         ? "activity-heading"
         : exampleHeading
           ? "example-heading"
+          : chapterHeading
+            ? "chapter-heading"
+            : chapterSubtitle
+              ? "chapter-subtitle"
           : undefined;
       const insideComposedExample = composedExampleBounds.some(
         (bounds) =>
@@ -282,27 +350,24 @@ export function createGeometryStoryboardHtml(
       );
       const headingSurface = activityHeading
         ? `;padding:.14em .56em;border-radius:.8em;background:${safeColor(decoration.accent)};color:#fff;box-shadow:none`
+        : chapterHeading
+          ? `;left:16%!important;width:68%!important;box-sizing:border-box;padding:.42em 0;border-radius:.45em;background:${safeColor(decoration.accent)};color:#fff;text-align:center;box-shadow:0 .18em .25em rgba(0,0,0,.16)`
+          : chapterSubtitle
+            ? `;left:17.5%!important;width:65%!important;box-sizing:border-box;padding:.52em 0;border:.08em solid ${safeColor(decoration.accent)};border-top:0;border-radius:0 0 .5em .5em;color:${safeColor(decoration.accent)};text-align:center`
         : "";
       const hiddenSemanticStyle = insideComposedExample
         ? "position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;"
         : "";
-      return `<${tag} data-layout-block="${index}"${numericBlock ? ' data-numeric-layout="true"' : ""}${insideComposedExample ? ' class="composite-example-semantics"' : className ? ` class="${className}"` : ""} style="${hiddenSemanticStyle}left:${percent(block.bbox.x, width)}%;top:${percent(block.bbox.y, height)}%;width:${boundedPercent(block.bbox.x, renderedWidth, width)}%;min-height:${boundedPercent(block.bbox.y, block.bbox.h, height)}%;font-family:${sourceFamily};font-size:${((fittedSize / width) * 100).toFixed(3)}cqw;font-weight:${weight};font-style:${style};color:${exampleHeading ? "#ffffff" : color}${horizontalScale < 0.999 ? `;transform:scaleX(${horizontalScale.toFixed(4)});transform-origin:left top` : ""}${numericBlock ? ";overflow:hidden;text-overflow:clip" : ""}${headingSurface}">${renderMathInText(block.text!)}</${tag}>`;
+      return `<${tag} data-id="page-${page.number}-text-${index}" data-layout-block="${index}"${numericBlock ? ' data-numeric-layout="true"' : ""}${insideComposedExample ? ' class="composite-example-semantics"' : className ? ` class="${className}"` : ""} style="${hiddenSemanticStyle}left:${percent(block.bbox.x, width)}%;top:${percent(renderedTop, height)}%;width:${boundedPercent(block.bbox.x, renderedWidth, width)}%;min-height:${boundedPercent(renderedTop, block.bbox.h, height)}%;font-family:${sourceFamily};font-size:${((fittedSize / width) * 100).toFixed(3)}cqw;font-weight:${weight};font-style:${style};color:${exampleHeading ? "#ffffff" : color}${horizontalScale < 0.999 ? `;transform:scaleX(${horizontalScale.toFixed(4)});transform-origin:left top` : ""}${numericBlock ? ";overflow:hidden;text-overflow:clip" : ""}${headingSurface}">${renderMathInText(block.text!)}</${tag}>`;
     })
     .join("");
   const fractionMath = fractionRows
     .map(
       (row, index) =>
-        `<span class="geometry-math" data-fraction-row="${index}" data-latex="${escapeHtml(row.latex)}" style="position:absolute;z-index:3;left:${percent(row.bbox.x, width)}%;top:${percent(row.bbox.y, height)}%;width:${boundedPercent(row.bbox.x, row.bbox.w, width)}%;height:${boundedPercent(row.bbox.y, row.bbox.h, height)}%;display:flex;align-items:center;font-size:${((row.fontSize / width) * 100).toFixed(3)}cqw;line-height:1"><math aria-label="${escapeHtml(row.label)}"><mrow><mfrac><mn>${row.numerators[0]}</mn><mn>${row.denominator}</mn></mfrac><mo>+</mo><mfrac><mn>${row.numerators[1]}</mn><mn>${row.denominator}</mn></mfrac><mo>=</mo></mrow></math></span>`,
+        `<span class="geometry-math" data-id="page-${page.number}-fraction-${index}" data-fraction-row="${index}" data-latex="${escapeHtml(row.latex)}" style="position:absolute;z-index:3;left:${percent(row.bbox.x, width)}%;top:${percent(row.bbox.y, height)}%;width:${boundedPercent(row.bbox.x, row.bbox.w, width)}%;height:${boundedPercent(row.bbox.y, row.bbox.h, height)}%;display:flex;align-items:center;font-size:${((row.fontSize / width) * 100).toFixed(3)}cqw;line-height:1"><math aria-label="${escapeHtml(row.label)}"><mrow><mfrac><mn>${row.numerators[0]}</mn><mn>${row.denominator}</mn></mfrac><mo>+</mo><mfrac><mn>${row.numerators[1]}</mn><mn>${row.denominator}</mn></mfrac><mo>=</mo></mrow></math></span>`,
     )
     .join("");
   const text = positionedText + fractionMath;
-  const examplePanelBounds = buildExamplePanels(rawTextBlocks, width, height);
-  const activityPanelBounds = buildActivityPanels(
-    rawTextBlocks,
-    width,
-    height,
-    visibleAssets,
-  );
   const inferredPanels = [...examplePanelBounds, ...activityPanelBounds];
   const sourceRules = (page.layoutBlocks ?? [])
     .filter((block) => {
@@ -355,6 +420,13 @@ export function createGeometryStoryboardHtml(
         `<span class="activity-panel" data-activity-panel="${index}" aria-hidden="true" style="left:${percent(panel.x, width)}%;top:${percent(panel.y, height)}%;width:${boundedPercent(panel.x, panel.w, width)}%;height:${boundedPercent(panel.y, panel.h, height)}%;border:.12cqw solid ${safeColor(decoration.accent)};border-radius:1.8cqw;background:color-mix(in srgb,${safeColor(decoration.accent)} 1.5%,#fff)"></span>`,
     )
     .join("");
+  const tracingActivities = buildTracingActivities(
+    contentBlocks,
+    activityPanelBounds,
+    width,
+    height,
+    decoration.accent,
+  );
   const activityGridCells = buildActivityGridCells(
     visibleAssets,
     rawTextBlocks,
@@ -507,20 +579,24 @@ export function createGeometryStoryboardHtml(
     pageHeight: height,
     activityPage: activityPage && !oralOnly,
   });
-  const repeatedBoxTargets = buildRepeatedAnswerBoxTargets({
-    assets: visibleAssets,
-    textBlocks: contentBlocks,
-    pageWidth: width,
-    pageHeight: height,
-    activityPage: activityPage && !oralOnly,
-  });
-  const repeatedVectorBoxTargets = buildRepeatedVectorAnswerBoxTargets({
-    layoutBlocks: page.layoutBlocks ?? [],
-    textBlocks: contentBlocks,
-    pageWidth: width,
-    pageHeight: height,
-    activityPage: activityPage && !oralOnly,
-  });
+  const repeatedBoxTargets = oralOnly
+    ? []
+    : buildRepeatedAnswerBoxTargets({
+        assets: visibleAssets,
+        textBlocks: contentBlocks,
+        pageWidth: width,
+        pageHeight: height,
+        activityPage,
+      });
+  const repeatedVectorBoxTargets = oralOnly
+    ? []
+    : buildRepeatedVectorAnswerBoxTargets({
+        layoutBlocks: page.layoutBlocks ?? [],
+        textBlocks: contentBlocks,
+        pageWidth: width,
+        pageHeight: height,
+        activityPage,
+      });
   const labeledItemTargets = oralOnly
     ? []
     : buildLabeledItemAnswerTargets({
@@ -585,18 +661,27 @@ export function createGeometryStoryboardHtml(
           },
         }))
     : [];
-  const stackedCellTargets = buildStackedArithmeticCellTargets(
-    contentBlocks,
-    page.layoutBlocks ?? [],
-    width,
-    height,
-  );
+  const stackedCellTargets = oralOnly
+    ? []
+    : buildStackedArithmeticCellTargets(
+        contentBlocks,
+        page.layoutBlocks ?? [],
+        width,
+        height,
+      );
   const illustratedEquationTable =
     graphicalAnswerBlocks.length >= 2 &&
     contentBlocks.some((block) => /^(?:add|equals|[+=])$/i.test(block.text?.trim() ?? ""));
+  const illustratedOperationTable =
+    illustratedEquationTable ||
+    (visibleAssets.length >= 3 &&
+      repeatedBoxTargets.length + repeatedVectorBoxTargets.length > 0 &&
+      /\b(?:take\s+away|remain|subtract|minus)\b/i.test(
+        contentBlocks.map((block) => block.text ?? "").join(" "),
+      ));
   const rawAnswerTargets = [
     ...textualAnswerTargets,
-    ...(oralOnly || repeatedBoxTargets.length > 0 || stackedCellTargets.length >= 4
+    ...(oralOnly || repeatedBoxTargets.length > 0 || repeatedVectorBoxTargets.length > 0 || stackedCellTargets.length >= 4
       ? []
       : graphicalAnswerBlocks.map((block) => ({
           ...block,
@@ -604,7 +689,7 @@ export function createGeometryStoryboardHtml(
           confidence: 0.9,
           evidence: "printed-writing-rule",
         }))),
-    ...(illustratedEquationTable ? [] : numberedVisualTargets.map((target) => ({
+    ...(illustratedOperationTable ? [] : numberedVisualTargets.map((target) => ({
       ...target,
       confidence: 0.72,
       evidence: "semantically-aligned-whitespace",
@@ -612,10 +697,10 @@ export function createGeometryStoryboardHtml(
     ...repeatedBoxTargets,
     ...repeatedVectorBoxTargets,
     ...labeledItemTargets,
-    ...(illustratedEquationTable ? [] : proseQuestionTargets),
-    ...fractionDiagramTargets,
-    ...(illustratedEquationTable ? [] : equationAnswerTargets),
-    ...stackedCellTargets,
+    ...(illustratedOperationTable ? [] : proseQuestionTargets),
+    ...(illustratedOperationTable ? [] : fractionDiagramTargets),
+    ...(illustratedOperationTable ? [] : equationAnswerTargets),
+    ...(illustratedOperationTable ? [] : stackedCellTargets),
   ];
   const answerTargets = validateAnswerTargets(
     rawAnswerTargets,
@@ -636,8 +721,34 @@ export function createGeometryStoryboardHtml(
   const inlineAnswerTargets = useDenseQuestionFlow
     ? answerTargets.filter((target) => target.evidence !== "numbered-prose-question")
     : answerTargets;
-  const naturalAnswerStyle = `<style data-litera-answer-style>.source-answer-line input{border:0;border-bottom:.13cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 62%,#5f5b52);border-radius:.18cqw .18cqw 0 0;background:color-mix(in srgb,${safeColor(decoration.accent)} 5%,transparent);color:#171717;padding:0 .18cqw;font-weight:500;box-shadow:none}.source-answer-line[data-placement-evidence="numbered-prose-question"] input,.source-answer-line[data-placement-evidence*="answer-box"] input{border:.12cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 70%,#777);border-radius:.16cqw;background:color-mix(in srgb,${safeColor(decoration.accent)} 2%,#fff)}.source-answer-line input:hover{background:color-mix(in srgb,${safeColor(decoration.accent)} 8%,transparent)}.source-answer-line input:focus{border-bottom:.2cqw solid ${safeColor(decoration.accent)};background:color-mix(in srgb,${safeColor(decoration.accent)} 10%,#fff);box-shadow:0 .14cqw 0 color-mix(in srgb,${safeColor(decoration.accent)} 32%,transparent)}.source-answer-line input[data-answer-state="correct"]{border-bottom-color:#16803c;background:color-mix(in srgb,#16803c 9%,transparent)}.source-answer-line input[data-answer-state="incorrect"]{border-bottom-color:#b42318;background:color-mix(in srgb,#b42318 7%,transparent)}</style>`;
-  const answerLines = naturalAnswerStyle + inlineAnswerTargets
+  const replacedAnswerVisualIds = visibleAssets
+    .filter((asset) => {
+      if (asset.bounds.w > width * 0.45 || asset.bounds.h > height * 0.085)
+        return false;
+      return inlineAnswerTargets.some((target) => {
+        if (target.evidence !== "repeated-printed-answer-box") return false;
+        const overlap = boundsOverlap(asset.bounds, target.bbox);
+        const centerX = target.bbox.x + target.bbox.w / 2;
+        const centerY = target.bbox.y + target.bbox.h / 2;
+        return overlap >= 0.72 || (
+          rectangleIoU(asset.bounds, target.bbox) >= .64 &&
+          centerX >= asset.bounds.x &&
+          centerX <= asset.bounds.x + asset.bounds.w &&
+          centerY >= asset.bounds.y &&
+          centerY <= asset.bounds.y + asset.bounds.h
+        );
+      });
+    })
+    .map((asset) => asset.id);
+  const answerVisualReplacementStyle = replacedAnswerVisualIds.length
+    ? `<style data-litera-answer-visual-replacement>${replacedAnswerVisualIds
+        .map((id) => `figure[data-asset-id="${escapeHtml(id)}"]{visibility:hidden}`)
+        .join("")}</style>`
+    : "";
+  const accessibleFeedbackStyle = `<style data-litera-answer-feedback-style>.answer-feedback{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}</style>`;
+  const strictLayoutStyle = `<style data-litera-strict-layout>[data-layout-block]{max-width:100%!important;overflow:hidden!important;text-overflow:clip}.source-answer-line,figure{max-width:100%;max-height:100%}</style>`;
+  const naturalAnswerStyle = `<style data-litera-answer-style>.source-answer-line input{border:0;border-bottom:.11cqw solid #696969;border-radius:0;background:transparent;color:#171717;padding:0 .12cqw;font-weight:500;box-shadow:none}.source-answer-line[data-placement-evidence="numbered-prose-question"] input{border:.09cqw solid #666;border-radius:.06cqw;background:rgba(255,255,255,.38)}.source-answer-line[data-placement-evidence*="answer-box"] input{border:.09cqw solid #585858;border-radius:0;background:rgba(255,255,255,.72);padding:0 .08cqw}.source-answer-line input:hover{background:rgba(255,255,255,.5)}.source-answer-line input:focus{border-color:${safeColor(decoration.accent)};background:rgba(255,255,255,.88);box-shadow:0 0 0 .12cqw color-mix(in srgb,${safeColor(decoration.accent)} 26%,transparent)}.source-answer-line input[data-answer-state="correct"]{border-color:#16803c;background:rgba(239,252,243,.72)}.source-answer-line input[data-answer-state="incorrect"]{border-color:#b42318;background:rgba(255,243,241,.72)}</style>`;
+  const answerLines = strictLayoutStyle + naturalAnswerStyle + answerVisualReplacementStyle + accessibleFeedbackStyle + inlineAnswerTargets
     .map((block, index) => {
       const textRule = block.type === "text";
       // Sit on the printed answer baseline instead of covering the equation
@@ -663,12 +774,26 @@ export function createGeometryStoryboardHtml(
             Math.abs(block.bbox.x - a.bbox.x) -
               Math.abs(block.bbox.x - b.bbox.x) || b.bbox.y - a.bbox.y,
         )[0]?.text;
+      const rowPrompt = contentBlocks
+        .filter((candidate) => {
+          const candidateCenter = candidate.bbox.y + candidate.bbox.h / 2;
+          const targetCenter = block.bbox.y + block.bbox.h / 2;
+          return (
+            Math.abs(candidateCenter - targetCenter) < height * .026 &&
+            candidate.bbox.x < block.bbox.x + block.bbox.w + width * .025
+          );
+        })
+        .sort((a, b) => a.bbox.x - b.bbox.x)
+        .map((candidate) => candidate.text?.trim() ?? "")
+        .filter(Boolean)
+        .join(" ");
       const geometricAnswer =
         "correctAnswer" in block && typeof block.correctAnswer === "string"
           ? block.correctAnswer
           : undefined;
       const correctAnswer =
         geometricAnswer ??
+        (rowPrompt ? inferCorrectAnswers(rowPrompt)[0] : undefined) ??
         (nearbyPrompt ? inferCorrectAnswers(nearbyPrompt)[0] : undefined);
       const normalizedRect = [
         block.bbox.x / width,
@@ -703,7 +828,7 @@ export function createGeometryStoryboardHtml(
           )
           .join(",")})`
       : (gradientStops[0] ?? "#ffffff");
-  const folio = renderSourceFolio(page, width, height, options);
+  const folio = renderSourceFolio(page, width, height, options, pageSurface);
   const prepressCleanup = "";
   const toc = options.tocEntries
     ? renderTableOfContents(options.tocEntries, options.tocTitle, page, width, height)
@@ -717,10 +842,55 @@ export function createGeometryStoryboardHtml(
     useDenseQuestionFlow ? "dense-activity-page" : "",
   ].filter(Boolean).join(" ");
   const pageClass = pageClasses ? ` class="${pageClasses}"` : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;width:100%;min-height:100%;background:#e9eaec}body{display:flex;justify-content:center;align-items:flex-start;overflow-x:hidden}main[data-litera-page]{container-type:inline-size;width:100%;max-width:none;aspect-ratio:${width}/${height};position:relative;overflow:hidden;background:${background};background-color:${pageSurface};color:#171717;font-family:${font}}main.dense-activity-page{overflow-y:auto}.dense-question-flow{position:absolute;z-index:10;left:8%;width:84%;box-sizing:border-box;padding:2.2cqw 2.8cqw 4cqw;display:flex;flex-direction:column;gap:2.2cqw;box-shadow:0 -1cqw 1.5cqw ${pageSurface}}.dense-question{display:flex;flex-direction:column;gap:.8cqw}.dense-question p{margin:0;font:500 1.7cqw/1.45 ${font}}.dense-question label{display:block;position:relative}.dense-question input{box-sizing:border-box;width:72%;min-height:4.8cqw;padding:.7cqw 1cqw;border:.12cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 48%,#777);border-radius:.65cqw;background:#fff;color:#171717;font:600 1.55cqw/1.2 ${font};outline:none}.dense-question input:focus{border-color:${safeColor(decoration.accent)};box-shadow:0 0 0 .25cqw color-mix(in srgb,${safeColor(decoration.accent)} 25%,transparent)}.dense-question-flow .litera-submit-answers{position:static;align-self:flex-end;margin-top:1cqw}[data-layout-block],figure,.semantic-decoration,.source-answer-line,.source-rule,.activity-grid-cell,.example-panel,.activity-panel{position:absolute;margin:0;box-sizing:border-box}[data-layout-block]{z-index:2;overflow:visible;white-space:nowrap;overflow-wrap:normal;line-height:1;${sourceMode ? "color:transparent!important;text-shadow:none!important" : ""}}.activity-heading{z-index:3!important;border-radius:.35em;background:color-mix(in srgb,${safeColor(decoration.accent)} 22%,#fff)}.activity-panel{z-index:0;border:.1cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 48%,#fff);background:color-mix(in srgb,${safeColor(decoration.accent)} 7%,#fff)}.example-panel,.activity-grid-cell{z-index:0}.source-rule{z-index:1;display:block;min-width:1px;min-height:1px;background:${safeColor(decoration.accent)}}.litera-math{display:inline-block}.litera-math math{font-size:1.08em}.semantic-decoration{z-index:0;border:0}.semantic-decoration--strong,.semantic-decoration--wash{background:transparent}figure{z-index:1;overflow:visible}.reading-flow{position:absolute;z-index:2;overflow:hidden;line-height:1.45;overflow-wrap:anywhere}figure img{display:block;width:100%;height:100%;object-fit:contain}.source-answer-line{z-index:5}.source-answer-line input{box-sizing:border-box;width:100%;height:100%;border:0;border-bottom:.16cqw solid #555;background:rgba(255,255,255,.94);color:#171717;font:600 1.45cqw/1.2 ${font};text-align:center;outline:none}.source-answer-line input:focus{border-bottom-color:${safeColor(decoration.accent)};background:#fff}.source-answer-line input[data-answer-state="correct"]{border-bottom-color:#16803c;background:#effcf3}.source-answer-line input[data-answer-state="incorrect"]{border-bottom-color:#b42318;background:#fff3f1}.answer-feedback{position:absolute;top:100%;left:0;min-width:max-content;font:700 1.05cqw/1.3 ${font}}.litera-submit-answers{position:absolute;z-index:12;right:4%;bottom:2.4%;min-width:18%;padding:.75cqw 1.5cqw;border:0;border-radius:999px;background:${safeColor(decoration.accent)};color:#fff;font:700 1.35cqw/1 ${font}}.source-folio{position:absolute;z-index:8;display:flex;align-items:center;box-sizing:border-box;white-space:nowrap}.digital-toc{position:absolute;z-index:3;display:flex;min-height:0;flex-direction:column}.digital-toc h1{margin:0;line-height:1.1}.digital-toc ol{min-height:0;margin:0;padding:0;display:flex;flex-direction:column;list-style:none}.digital-toc li{display:grid;grid-template-columns:auto 1fr auto;align-items:end;min-width:0}.digital-toc .dots{min-width:1rem;border-bottom:.16cqw dotted currentColor;transform:translateY(-.35cqw);opacity:.65}.digital-toc a{display:contents;color:inherit;text-decoration:none}.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}</style></head><body><main${pageClass} data-litera-page aria-label="Accessible book page ${options.digitalPageNumber ?? page.number}">${toc || `${sourcePage}${sourceMode ? "" : semanticDecorations}${sourceRules}${examplePanels}${activityPanels}${activityGridCells}${text}${sourceMode ? "" : images}${answerLines}${denseQuestionFlow}${answerSubmit}${semanticTables}`}${sourceMode ? "" : prepressCleanup}${sourceMode ? "" : folio}</main><script>(function(){var submit=document.querySelector('[data-litera-submit]');var inputs=Array.from(document.querySelectorAll('.source-answer-line input,.dense-question input'));var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var update=function(){if(submit)submit.disabled=!inputs.some(function(input){return input.value.trim()})};document.addEventListener('input',function(event){var input=event.target;if(!(input instanceof HTMLInputElement))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback)feedback.textContent='';update()});if(submit)submit.addEventListener('click',function(){var correctCount=0,incorrectCount=0;inputs.forEach(function(input){if(!input.value.trim()||!input.dataset.correctAnswer)return;var correct=clean(input.value)===clean(input.dataset.correctAnswer);input.dataset.answerState=correct?'correct':'incorrect';if(correct)correctCount++;else incorrectCount++;var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback)feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:incorrectCount,checked:correctCount+incorrectCount},'*')});update()})()</script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;width:100%;min-height:100%;background:#e9eaec}body{display:flex;justify-content:center;align-items:flex-start;overflow-x:hidden}main[data-litera-page]{container-type:inline-size;width:100%;max-width:none;aspect-ratio:${width}/${height};position:relative;overflow:hidden;background:${background};background-color:${pageSurface};color:#171717;font-family:${font}}main.dense-activity-page{overflow-y:auto}.dense-question-flow{position:absolute;z-index:10;left:8%;width:84%;box-sizing:border-box;padding:2.2cqw 2.8cqw 4cqw;display:flex;flex-direction:column;gap:2.2cqw;box-shadow:0 -1cqw 1.5cqw ${pageSurface}}.dense-question{display:flex;flex-direction:column;gap:.8cqw}.dense-question p{margin:0;font:500 1.7cqw/1.45 ${font}}.dense-question label{display:block;position:relative}.dense-question input{box-sizing:border-box;width:72%;min-height:4.8cqw;padding:.7cqw 1cqw;border:.12cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 48%,#777);border-radius:.65cqw;background:#fff;color:#171717;font:600 1.55cqw/1.2 ${font};outline:none}.dense-question input:focus{border-color:${safeColor(decoration.accent)};box-shadow:0 0 0 .25cqw color-mix(in srgb,${safeColor(decoration.accent)} 25%,transparent)}.dense-question-flow .litera-submit-answers{position:static;align-self:flex-end;margin-top:1cqw}[data-layout-block],figure,.semantic-decoration,.source-answer-line,.source-rule,.activity-grid-cell,.example-panel,.activity-panel{position:absolute;margin:0;box-sizing:border-box}[data-layout-block]{z-index:2;overflow:visible;white-space:nowrap;overflow-wrap:normal;line-height:1;${sourceMode ? "color:transparent!important;text-shadow:none!important" : ""}}.activity-heading{z-index:3!important;border-radius:.35em;background:color-mix(in srgb,${safeColor(decoration.accent)} 22%,#fff)}.activity-panel{z-index:0;border:.1cqw solid color-mix(in srgb,${safeColor(decoration.accent)} 48%,#fff);background:color-mix(in srgb,${safeColor(decoration.accent)} 7%,#fff)}.example-panel,.activity-grid-cell{z-index:0}.source-rule{z-index:1;display:block;min-width:1px;min-height:1px;background:${safeColor(decoration.accent)}}.litera-math{display:inline-block}.litera-math math{font-size:1.08em}.semantic-decoration{z-index:0;border:0}.semantic-decoration--strong,.semantic-decoration--wash{background:transparent}figure{z-index:1;overflow:visible}.reading-flow{position:absolute;z-index:2;overflow:hidden;line-height:1.45;overflow-wrap:anywhere}figure img{display:block;width:100%;height:100%;object-fit:contain}.source-answer-line{z-index:5}.source-answer-line input{box-sizing:border-box;width:100%;height:100%;border:0;border-bottom:.16cqw solid #555;background:rgba(255,255,255,.94);color:#171717;font:600 1.45cqw/1.2 ${font};text-align:center;outline:none}.source-answer-line input:focus{border-bottom-color:${safeColor(decoration.accent)};background:#fff}.source-answer-line input[data-answer-state="correct"]{border-bottom-color:#16803c;background:#effcf3}.source-answer-line input[data-answer-state="incorrect"]{border-bottom-color:#b42318;background:#fff3f1}.answer-feedback{position:absolute;top:100%;left:0;min-width:max-content;font:700 1.05cqw/1.3 ${font}}.litera-submit-answers{position:absolute;z-index:12;right:4%;bottom:2.4%;min-width:18%;padding:.75cqw 1.5cqw;border:0;border-radius:999px;background:${safeColor(decoration.accent)};color:#fff;font:700 1.35cqw/1 ${font}}.source-folio{position:absolute;z-index:8;display:flex;align-items:center;box-sizing:border-box;white-space:nowrap}.digital-toc{position:absolute;z-index:3;display:flex;min-height:0;flex-direction:column}.digital-toc h1{margin:0;line-height:1.1}.digital-toc ol{min-height:0;margin:0;padding:0;display:flex;flex-direction:column;list-style:none}.digital-toc li{display:grid;grid-template-columns:auto 1fr auto;align-items:end;min-width:0}.digital-toc .dots{min-width:1rem;border-bottom:.16cqw dotted currentColor;transform:translateY(-.35cqw);opacity:.65}.digital-toc a{display:contents;color:inherit;text-decoration:none}.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}</style></head><body><main${pageClass} data-litera-page aria-label="Accessible book page ${options.digitalPageNumber ?? page.number}">${toc || `${sourcePage}${sourceMode ? "" : semanticDecorations}${sourceRules}${examplePanels}${activityPanels}${activityGridCells}${text}${sourceMode ? "" : images}${answerLines}${tracingActivities.html}${denseQuestionFlow}${answerSubmit}${semanticTables}`}${sourceMode ? "" : prepressCleanup}${sourceMode ? "" : folio}</main>${tracingActivities.runtime}<script>(function(){var submit=document.querySelector('[data-litera-submit]');var inputs=Array.from(document.querySelectorAll('.source-answer-line input,.dense-question input'));var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var update=function(){if(submit)submit.disabled=!inputs.some(function(input){return input.value.trim()})};document.addEventListener('input',function(event){var input=event.target;if(!(input instanceof HTMLInputElement))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback)feedback.textContent='';update()});if(submit)submit.addEventListener('click',function(){var correctCount=0,incorrectCount=0;inputs.forEach(function(input){if(!input.value.trim()||!input.dataset.correctAnswer)return;var correct=clean(input.value)===clean(input.dataset.correctAnswer);input.dataset.answerState=correct?'correct':'incorrect';if(correct)correctCount++;else incorrectCount++;var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback)feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:incorrectCount,checked:correctCount+incorrectCount},'*')});update()})()</script></body></html>`;
+}
+
+function buildTracingActivities(
+  blocks: ExtractedLayoutBlock[],
+  panels: Array<{ x: number; y: number; w: number; h: number }>,
+  pageWidth: number,
+  pageHeight: number,
+  accent: string,
+) {
+  const prompts = blocks.filter((block) =>
+    /\b(?:trace|join(?:ing)?\s+the\s+dots|practi[cs]e\s+writing|copy|fuatisha|unganisha\s+nukta)\b/i.test(
+      block.text ?? "",
+    ),
+  );
+  if (!prompts.length) return { html: "", runtime: "" };
+  const words: Record<string, string> = {
+    zero: "0", one: "1", two: "2", three: "3", four: "4",
+    five: "5", six: "6", seven: "7", eight: "8", nine: "9",
+  };
+  const fields = prompts.flatMap((prompt, promptIndex) => {
+    const text = prompt.text ?? "";
+    const named = Object.entries(words).find(([word]) => new RegExp(`\\b${word}\\b`, "i").test(text))?.[1];
+    const explicit = [...text.matchAll(/\b\d\b/g)].map((match) => match[0]);
+    const symbols = named ? Array(5).fill(named) : explicit.length ? explicit : [""];
+    const panel = panels.find((candidate) => {
+      const centerX = prompt.bbox.x + prompt.bbox.w / 2;
+      const centerY = prompt.bbox.y + prompt.bbox.h / 2;
+      return centerX >= candidate.x && centerX <= candidate.x + candidate.w && centerY >= candidate.y && centerY <= candidate.y + candidate.h;
+    }) ?? { x: prompt.bbox.x, y: prompt.bbox.y, w: Math.min(pageWidth - prompt.bbox.x, pageWidth * .82), h: pageHeight * .14 };
+    const leftInset = named ? panel.w * .23 : panel.w * .04;
+    const gap = panel.w * .012;
+    const available = Math.max(pageWidth * .18, panel.w - leftInset - panel.w * .04);
+    const cellWidth = Math.min(pageWidth * .13, (available - gap * (symbols.length - 1)) / symbols.length);
+    const top = Math.min(panel.y + panel.h - pageHeight * .07, prompt.bbox.y + prompt.bbox.h + pageHeight * .008);
+    const cellHeight = Math.max(pageHeight * .055, Math.min(pageHeight * .085, panel.y + panel.h - top - pageHeight * .008));
+    return symbols.map((symbol, index) => {
+      const x = panel.x + leftInset + index * (cellWidth + gap);
+      return `<div class="litera-trace-field" data-activity-item="trace-${promptIndex}-${index}" style="position:absolute;z-index:9;left:${percent(x,pageWidth)}%;top:${percent(top,pageHeight)}%;width:${boundedPercent(x,cellWidth,pageWidth)}%;height:${boundedPercent(top,cellHeight,pageHeight)}%"><canvas data-litera-trace-canvas data-trace-target="${escapeHtml(symbol)}" width="360" height="420" aria-label="Trace ${escapeHtml(symbol || "the printed guide")}" style="display:block;width:100%;height:100%;touch-action:none;background:transparent;cursor:crosshair"></canvas><span class="sr-only" data-litera-drawing-feedback role="status" aria-live="polite"></span></div>`;
+    });
+  }).join("");
+  const controls = `<div data-litera-trace-controls style="position:absolute;z-index:11;right:8%;top:88.6%;display:flex;align-items:center;gap:.42cqw"><button type="button" data-litera-clear-drawing style="box-sizing:border-box;border:.09cqw solid ${safeColor(accent)};border-radius:999px;background:#fff;color:#171717;padding:.38cqw .72cqw;font:600 1.18cqw/1 Arial,sans-serif;white-space:nowrap">Clear</button><button type="button" data-litera-check-drawing style="box-sizing:border-box;border:.09cqw solid ${safeColor(accent)};border-radius:999px;background:${safeColor(accent)};color:#fff;padding:.38cqw .72cqw;font:600 1.18cqw/1 Arial,sans-serif;white-space:nowrap">Check</button></div>`;
+  const runtime = `<script data-litera-trace-runtime>(function(){var canvases=Array.from(document.querySelectorAll('[data-litera-trace-canvas]'));if(!canvases.length)return;canvases.forEach(function(canvas){var context=canvas.getContext('2d',{willReadFrequently:true});if(!context)return;var symbol=canvas.dataset.traceTarget||'',guide=document.createElement('canvas');guide.width=canvas.width;guide.height=canvas.height;var guideContext=guide.getContext('2d',{willReadFrequently:true});if(!guideContext)return;guideContext.strokeStyle='#111';guideContext.lineWidth=18;guideContext.font='bold 310px Arial';guideContext.textAlign='center';guideContext.textBaseline='middle';if(symbol)guideContext.strokeText(symbol,guide.width/2,guide.height/2);context.lineWidth=16;context.lineCap='round';context.lineJoin='round';context.strokeStyle='#172554';var drawing=false,point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();context.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);context.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});canvas._literaClear=function(){context.clearRect(0,0,canvas.width,canvas.height)};canvas._literaScore=function(){var ink=context.getImageData(0,0,canvas.width,canvas.height).data,target=guideContext.getImageData(0,0,guide.width,guide.height).data,w=canvas.width,h=canvas.height,radius=16,near=function(data,x,y){for(var yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy+=4)for(var xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx+=4)if(data[(yy*w+xx)*4+3]>40)return true;return false},coverage=0,guideCount=0,precision=0,inkCount=0;for(var y=0;y<h;y+=4)for(var x=0;x<w;x+=4){var offset=(y*w+x)*4;if(target[offset+3]>40){guideCount++;if(near(ink,x,y))coverage++}if(ink[offset+3]>40){inkCount++;if(near(target,x,y))precision++}}if(!symbol)return inkCount>20?1:0;return .72*(coverage/Math.max(1,guideCount))+.28*(precision/Math.max(1,inkCount))};});var clear=document.querySelector('[data-litera-clear-drawing]'),check=document.querySelector('[data-litera-check-drawing]');if(clear)clear.addEventListener('click',function(){canvases.forEach(function(canvas){canvas._literaClear()})});if(check)check.addEventListener('click',function(){var completed=0;canvases.forEach(function(canvas){var score=canvas._literaScore(),passed=score>=.56,field=canvas.closest('[data-activity-item]');if(passed)completed++;if(field){field.dataset.answerState=passed?'correct':'incorrect';var status=field.querySelector('[data-litera-drawing-feedback]');if(status)status.textContent=passed?'Good tracing.':'Follow the dotted guide more closely.'}});window.parent.postMessage({type:'litera-answer-feedback',correct:completed,incorrect:canvases.length-completed,checked:canvases.length},'*')})})()</script>`;
+  return { html: `<section data-litera-tracing-activity aria-label="Interactive tracing activity">${fields}${controls}</section>`, runtime };
 }
 
 function localizedSubmitLabel(text: string) {
+  if (/\b(?:answer|question|exercise|activity|draw|write|match|count|fill|select|choose)\b/i.test(text))
+    return "Submit answers";
   if (/\b(?:andika|jibu|swali|sehemu|kivuli|zoezi|shughuli)\b/i.test(text))
     return "Wasilisha majibu";
   if (/\b(?:réponse|question|exercice)\b/i.test(text)) return "Soumettre les réponses";
@@ -1477,6 +1647,7 @@ function renderTableOfContents(
   pageHeight: number,
 ) {
   const blocks = (page.layoutBlocks ?? []).filter((block) => block.type === "text" && block.text?.trim());
+  const effectiveEntries = entries.length ? entries : inferSourceTocEntries(blocks);
   const heading = blocks.find((block) => /^(?:table of contents|contents|yaliyomo|faharasa)$/i.test(block.text!.trim()));
   const rows = blocks.filter((block) => block.bbox.y > (heading?.bbox.y ?? pageHeight * .06) && block.bbox.y < pageHeight * .92);
   const left = rows.length ? Math.min(...rows.map((block) => block.bbox.x)) : pageWidth * .12;
@@ -1492,8 +1663,8 @@ function renderTableOfContents(
   const rowColor = safeColor(rows.find((block) => block.font?.color)?.font?.color ?? "#252525");
   const usesLeaders = blocks.some((block) => /\.{3,}/.test(block.text ?? ""));
   const navStyle = `left:${percent(left,pageWidth)}%;top:${percent(top,pageHeight)}%;width:${boundedPercent(left,right-left,pageWidth)}%;height:${boundedPercent(top,bottom-top,pageHeight)}%`;
-  const rowGap = Math.max(.35, Math.min(rowSize * .7, ((bottom - top) / pageHeight * 100 - titleSize * 2.2) / Math.max(1, entries.length) - rowSize * 1.25));
-  return `<nav class="digital-toc" style="${navStyle};color:${rowColor}" aria-labelledby="digital-toc-title"><h1 id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;color:${titleColor};font-weight:${heading?.font?.weight ?? 700};margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${rowGap.toFixed(2)}cqw">${entries.map((entry) => {
+  const rowGap = Math.max(.35, Math.min(rowSize * .7, ((bottom - top) / pageHeight * 100 - titleSize * 2.2) / Math.max(1, effectiveEntries.length) - rowSize * 1.25));
+  return `<nav class="digital-toc" style="${navStyle};color:${rowColor}" aria-labelledby="digital-toc-title"><h1 data-id="page-${page.number}-toc-title" id="digital-toc-title" style="text-align:${align};font-size:${titleSize.toFixed(2)}cqw;color:${titleColor};font-weight:${heading?.font?.weight ?? 700};margin-bottom:${Math.max(1.4,rowSize * 1.5).toFixed(2)}cqw">${escapeHtml(title)}</h1><ol style="gap:${rowGap.toFixed(2)}cqw">${effectiveEntries.map((entry, entryIndex) => {
     const source = bestTocSourceBlock(entry.title, rows);
     const sourceSize = Math.max(
       1.05,
@@ -1507,8 +1678,61 @@ function renderTableOfContents(
       : entry.level === 1
         ? 700
         : 400;
-    return `<li data-level="${entry.level}" style="gap:${Math.max(.45,sourceSize*.35).toFixed(2)}cqw;font-size:${sourceSize.toFixed(2)}cqw;font-weight:${sourceWeight};color:${sourceColor};padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title.replace(/\s*\.{2,}\s*\d{1,4}\s*$/, ""))}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`;
+    return `<li data-id="page-${page.number}-toc-${entryIndex}" data-level="${entry.level}" style="gap:${Math.max(.45,sourceSize*.35).toFixed(2)}cqw;font-size:${sourceSize.toFixed(2)}cqw;font-weight:${sourceWeight};color:${sourceColor};padding-inline-start:${Math.max(0, entry.level - 1) * 1.7}cqw"><a href="#page-${entry.pageNumber}" onclick="parent.postMessage({type:'litera-open-page',pageNumber:${entry.pageNumber}},'*');return false"><span>${escapeHtml(entry.title.replace(/\s*\.{2,}\s*\d{1,4}\s*$/, ""))}</span><span class="dots" style="${usesLeaders ? "" : "border-color:transparent"}" aria-hidden="true"></span><span aria-label="Digital page ${entry.pageNumber}">${entry.pageNumber}</span></a></li>`;
   }).join("")}</ol></nav>`;
+}
+
+function inferSourceTocEntries(blocks: ExtractedLayoutBlock[]) {
+  const ordered = [...blocks].sort(
+    (a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x,
+  );
+  const entries: Array<{ title: string; pageNumber: number; level: number }> = [];
+  let pendingChapter: string | undefined;
+  for (const block of ordered) {
+    const text = block.text?.replace(/\s+/g, " ").trim() ?? "";
+    if (/^(?:chapter|sura|unit)\b/i.test(text) && !/\d\s*$/.test(text)) {
+      pendingChapter = text;
+      continue;
+    }
+    const match = text.match(
+      /^(.{3,}?)\s*(?:\.{2,}|\s)\s*(\d{1,4}|[ivxlcdm]+)\s*$/i,
+    );
+    if (!match) continue;
+    const printed = /^\d+$/.test(match[2]!)
+      ? Number(match[2])
+      : romanToNumber(match[2]!);
+    if (!Number.isFinite(printed) || printed < 1) continue;
+    if (pendingChapter) {
+      entries.push({ title: pendingChapter, pageNumber: printed, level: 1 });
+      pendingChapter = undefined;
+    }
+    const title = match[1]!.replace(/\.{2,}\s*$/, "").trim();
+    if (title)
+      entries.push({
+        title,
+        pageNumber: printed,
+        level: /^(?:chapter|sura|unit)\b/i.test(title) ? 1 : 2,
+      });
+  }
+  return entries;
+}
+
+function romanToNumber(value: string) {
+  const weights: Record<string, number> = {
+    i: 1,
+    v: 5,
+    x: 10,
+    l: 50,
+    c: 100,
+    d: 500,
+    m: 1000,
+  };
+  const letters = [...value.toLocaleLowerCase()];
+  return letters.reduce((total, letter, index) => {
+    const current = weights[letter] ?? 0;
+    const next = weights[letters[index + 1] ?? ""] ?? 0;
+    return total + (current < next ? -current : current);
+  }, 0);
 }
 
 function bestTocSourceBlock(title: string, blocks: ExtractedLayoutBlock[]) {
@@ -1541,6 +1765,7 @@ function renderSourceFolio(
   pageWidth: number,
   pageHeight: number,
   options: GeometryRenderOptions,
+  pageSurface: string,
 ) {
   const digital = options.digitalPageNumber ?? page.number;
   const source = (page.layoutBlocks ?? [])
@@ -1558,7 +1783,8 @@ function renderSourceFolio(
     : String(digital);
   const size = Math.max(1.1, ((source.font?.size ?? source.bbox.h * .8) / pageWidth) * 100);
   const color = safeColor(source.font?.color ?? "#171717");
-  return `<span class="source-folio" aria-label="Digital page ${digital}" style="left:${percent(source.bbox.x,pageWidth)}%;top:${percent(source.bbox.y,pageHeight)}%;width:${boundedPercent(source.bbox.x,Math.max(source.bbox.w,pageWidth*.045),pageWidth)}%;height:${boundedPercent(source.bbox.y,source.bbox.h,pageHeight)}%;justify-content:${justify};font-size:${size.toFixed(2)}cqw;color:${color}">${label}</span>`;
+  const visibleColor = readableTextColor(color, pageSurface, 4.5);
+  return `<span class="source-folio" aria-label="Digital page ${digital}" style="left:${percent(source.bbox.x,pageWidth)}%;top:${percent(source.bbox.y,pageHeight)}%;width:${boundedPercent(source.bbox.x,Math.max(source.bbox.w,pageWidth*.045),pageWidth)}%;height:${boundedPercent(source.bbox.y,source.bbox.h,pageHeight)}%;justify-content:${justify};font-size:${size.toFixed(2)}cqw;color:${visibleColor};text-shadow:0 .08cqw .18cqw rgba(255,255,255,.8)">${label}</span>`;
 }
 
 function isNonContentBlock(block: ExtractedLayoutBlock, pageHeight: number) {
@@ -1772,6 +1998,57 @@ function buildRepeatedVectorAnswerBoxTargets({
     if (!boxes.some((candidate) => rectangleIoU(candidate, box) > 0.7))
       boxes.push(box);
   }
+  const equalsAnchored = textBlocks
+    .filter((block) => /^(?:=|equals)$/i.test(block.text?.trim() ?? ""))
+    .map((equalsBlock) => {
+      const equalsCenterY = equalsBlock.bbox.y + equalsBlock.bbox.h / 2;
+      const box = boxes
+        .filter((box) =>
+          box.x > equalsBlock.bbox.x + equalsBlock.bbox.w &&
+          Math.abs(box.y + box.h / 2 - equalsCenterY) <= pageHeight * .03,
+        )
+        .sort((a, b) => a.x - b.x)[0];
+      return box ? { box, equalsBlock } : undefined;
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item, index, items) =>
+      items.findIndex((candidate) => rectangleIoU(candidate.box, item.box) > .72) === index,
+    );
+  if (equalsAnchored.length >= 2) {
+    return equalsAnchored
+      .sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x)
+      .map(({ box, equalsBlock }) => {
+        const rowText = textBlocks
+          .filter((candidate) => {
+            const candidateCenter = candidate.bbox.y + candidate.bbox.h / 2;
+            const equalsCenter = equalsBlock.bbox.y + equalsBlock.bbox.h / 2;
+            return (
+              candidate.bbox.x <= equalsBlock.bbox.x + equalsBlock.bbox.w &&
+              Math.abs(candidateCenter - equalsCenter) <= pageHeight * .026
+            );
+          })
+          .sort((a, b) => a.bbox.x - b.bbox.x)
+          .map((candidate) => candidate.text?.trim() ?? "")
+          .filter(Boolean)
+          .join(" ");
+        const rowNumbers = [...rowText.matchAll(/\b\d+(?:\.\d+)?\b/g)].map(
+          (match) => Number(match[0]),
+        );
+        const operationAnswer =
+          /\b(?:take\s+away|remain|subtract|minus)\b/i.test(instruction) &&
+          rowNumbers.length >= 2
+            ? String(rowNumbers[0]! - rowNumbers[1]!)
+            : undefined;
+        return {
+          type: "image" as const,
+          text: rowText,
+          confidence: .99,
+          evidence: "equals-anchored-answer-box",
+          correctAnswer: inferCorrectAnswers(rowText)[0] ?? operationAnswer,
+          bbox: box,
+        };
+      });
+  }
   const groups = boxes.reduce<Array<typeof boxes>>((output, box) => {
     const group = output.find((items) => {
       const sample = items[0]!;
@@ -1784,7 +2061,16 @@ function buildRepeatedVectorAnswerBoxTargets({
     else output.push([box]);
     return output;
   }, []);
-  const repeated = groups.sort((a, b) => b.length - a.length)[0] ?? [];
+  const operationGrid = /\b(?:take\s+away|remain|subtract|minus|equals)\b/i.test(instruction);
+  const repeated = groups
+    .filter((group) => group.length >= 3)
+    .sort((a, b) =>
+      operationGrid
+        ? median(b.map((box) => box.x + box.w / 2)) -
+          median(a.map((box) => box.x + box.w / 2))
+        : median(a.map((box) => box.w * box.h)) -
+          median(b.map((box) => box.w * box.h)),
+    )[0] ?? [];
   if (repeated.length < 3) return [];
   const numberWords: Record<string, string> = {
     zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5",

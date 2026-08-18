@@ -4,7 +4,9 @@ import type { SpeechEntry, TextCatalogEntry } from "@/components/device/device-t
 export function isSpeakableText(text: string) { return text.replace(/[\p{P}\p{S}\s]/gu, "").length > 0; }
 export function prepareTextForSpeech(text: string, language?: string) {
   const cleaned = normalizeDottedPageReferences(text, language)
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, (symbol) =>
+      symbol === "©" || symbol === "®" || symbol === "™" ? symbol : "",
+    )
     .replace(/\s+/g, " ")
     .trim();
   return language?.toLowerCase().startsWith("sw")
@@ -30,12 +32,62 @@ export async function synthesizeCatalogEntry({ entry, language, provider, keys, 
     const pcm = Uint8Array.from(atob(inline.data), character => character.charCodeAt(0));
     audio = inline.mimeType?.includes("wav") ? new Blob([pcm], { type: "audio/wav" }) : pcmToWav(pcm, 24_000);
   } else throw new Error("Speech requires an unlocked OpenAI or Gemini key.");
-  const durationMs = estimateDuration(text, speed);
-  return { id: `${language}:${entry.id}`, textId: entry.id, language, pageNumber: entry.pageNumber, inputText: text, voice, speed, audio, durationMs, words: estimateWordTimestamps(text, durationMs) };
+  let durationMs = estimateDuration(text, speed);
+  let words = estimateWordTimestamps(text, durationMs);
+  if (keys.openai) {
+    try {
+      const aligned = await transcribeWordTimestamps(audio, keys.openai, signal);
+      if (aligned.length) {
+        words = aligned;
+        durationMs = aligned.at(-1)?.endMs ?? durationMs;
+      }
+    } catch {
+      // A failed alignment must not discard otherwise usable narration. The
+      // duration-scaled estimate remains available as an explicit fallback.
+    }
+  }
+  return { id: `${language}:${entry.id}`, textId: entry.id, language, pageNumber: entry.pageNumber, inputText: text, voice, speed, audio, durationMs, words };
 }
 
 function estimateDuration(text: string, speed: number) { return Math.max(500, Math.round(text.split(/\s+/).length / (2.6 * speed) * 1000)); }
-function estimateWordTimestamps(text: string, durationMs: number) { const words = text.split(/\s+/).filter(Boolean); const unit = durationMs / Math.max(1, words.length); return words.map((word, index) => ({ word, startMs: Math.round(index * unit), endMs: Math.round((index + 1) * unit) })); }
+function estimateWordTimestamps(text: string, durationMs: number) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const weights = words.map((word) =>
+    Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, "").length * 0.22) +
+    (/[.!?;:]$/.test(word) ? 1.15 : /[,]$/.test(word) ? 0.55 : 0),
+  );
+  const totalWeight = Math.max(1, weights.reduce((sum, weight) => sum + weight, 0));
+  let cursor = 0;
+  return words.map((word, index) => {
+    const startMs = Math.round((cursor / totalWeight) * durationMs);
+    cursor += weights[index]!;
+    return { word, startMs, endMs: Math.round((cursor / totalWeight) * durationMs) };
+  });
+}
+async function transcribeWordTimestamps(audio: Blob, apiKey: string, signal?: AbortSignal) {
+  const body = new FormData();
+  body.append("file", audio, audio.type.includes("wav") ? "speech.wav" : "speech.mp3");
+  body.append("model", "whisper-1");
+  body.append("response_format", "verbose_json");
+  body.append("timestamp_granularities[]", "word");
+  const response = await providerFetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body,
+    signal,
+  });
+  if (!response.ok) throw new Error((await safeProviderError(response)) || "OpenAI could not align speech timestamps.");
+  const payload = await response.json() as { words?: Array<{ word?: string; start?: number; end?: number }> };
+  return parseAlignedWords(payload.words);
+}
+
+export function parseAlignedWords(words?: Array<{ word?: string; start?: number; end?: number }>) {
+  return (words ?? []).flatMap((word) => {
+    const text = word.word?.trim();
+    if (!text || !Number.isFinite(word.start) || !Number.isFinite(word.end)) return [];
+    return [{ word: text, startMs: Math.round(word.start! * 1000), endMs: Math.round(word.end! * 1000) }];
+  });
+}
 function openAiVoice(value: string) { return ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"].includes(value) ? value : "alloy"; }
 function geminiVoice(value: string) { return ["Kore", "Puck", "Aoede", "Charon", "Fenrir"].includes(value) ? value : "Kore"; }
 function speechInstructions(language: string, editorInstructions?: string) {

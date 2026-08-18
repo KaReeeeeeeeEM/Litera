@@ -28,9 +28,11 @@ export async function readBooks() {
 export async function saveBook(book: DeviceBook) {
   const database = await openDeviceDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database.transaction(booksStore, "readwrite").objectStore(booksStore).put(book);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(booksStore, "readwrite");
+    const request = transaction.objectStore(booksStore).put(book);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? request.error);
+    transaction.onabort = () => reject(transaction.error ?? request.error ?? new Error("The book save was aborted."));
   });
   database.close();
 }
@@ -38,9 +40,11 @@ export async function saveBook(book: DeviceBook) {
 export async function removeBook(id: string) {
   const database = await openDeviceDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database.transaction(booksStore, "readwrite").objectStore(booksStore).delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(booksStore, "readwrite");
+    const request = transaction.objectStore(booksStore).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? request.error);
+    transaction.onabort = () => reject(transaction.error ?? request.error ?? new Error("The book removal was aborted."));
   });
   database.close();
 }

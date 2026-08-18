@@ -117,6 +117,46 @@ assert.equal(
   3,
   "reliable printed boxes must suppress overlapping generic answer-line fallbacks",
 );
+assert.match(
+  horizontalAdditionHtml,
+  /data-litera-answer-visual-replacement/,
+  "printed answer-box artwork replaced by interactive inputs must not remain visibly doubled",
+);
+
+const chapterOpenerHtml = createGeometryStoryboardHtml({
+  number: 25,
+  width: 569,
+  height: 779,
+  layoutBlocks: [
+    { type: "text", text: "Chapter Five", bbox: { x: 205, y: 90, w: 160, h: 32 }, font: { size: 26, color: "#ffffff" } },
+    { type: "text", text: "Recognising number zero", bbox: { x: 160, y: 132, w: 250, h: 25 }, font: { size: 20, color: "#00aaa9" } },
+  ],
+  assets: [],
+}, {});
+assert.match(chapterOpenerHtml, /class="chapter-heading"[^>]*background:#/i, "chapter banners must be reconstructed as filled source-style panels");
+assert.match(chapterOpenerHtml, /class="chapter-subtitle"[^>]*border:/i, "chapter subtitles must retain their outlined source hierarchy");
+const tracingHtml = createGeometryStoryboardHtml({
+  number: 25,
+  width: 569,
+  height: 779,
+  layoutBlocks: [
+    { type: "text", text: "Exercise 2", bbox: { x: 90, y: 560, w: 90, h: 22 }, font: { size: 16 } },
+    { type: "text", text: "Trace zero by joining the dots.", bbox: { x: 95, y: 585, w: 260, h: 20 }, font: { size: 15 } },
+  ],
+  assets: [],
+}, {});
+assert.equal(
+  (tracingHtml.match(/<canvas data-litera-trace-canvas/g) ?? []).length,
+  5,
+  "a printed trace-zero row must expose each practice position as its own canvas",
+);
+assert.match(tracingHtml, /data-trace-target="0"/);
+assert.match(tracingHtml, /data-litera-check-drawing/);
+assert.match(
+  horizontalAdditionHtml,
+  /aria-label="Digital page 30"[^>]*>30<\/span>/,
+  "every rendered page must retain a visible digital folio",
+);
 
 const tableRules = [
   ...[110, 280, 445].map((x) => ({ type: "image" as const, bbox: { x, y: 650, w: 40, h: 3 } })),
@@ -1142,6 +1182,7 @@ assert.match(tocHtml, /class="digital-toc"/);
 assert.match(tocHtml, />Yaliyomo</);
 assert.match(tocHtml, /Sura ya Kwanza/);
 assert.match(tocHtml, /Digital page 6/);
+assert.match(tocHtml, /data-id="page-3-toc-title"/);
 assert.match(
   tocHtml,
   /litera-open-page/,
@@ -1170,6 +1211,28 @@ const styledTocHtml = createGeometryStoryboardHtml(
 );
 assert.match(styledTocHtml, /font-size:3\.00cqw;font-weight:700;color:#00aeb7/);
 assert.match(styledTocHtml, /font-size:2\.40cqw;font-weight:400;color:#252525/);
+
+const sourceRecoveredTocHtml = createGeometryStoryboardHtml(
+  {
+    number: 3,
+    width: 500,
+    height: 700,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 170, y: 50, w: 160, h: 20 }, text: "Table of contents", font: { size: 18 } },
+      { type: "text", bbox: { x: 70, y: 105, w: 120, h: 16 }, text: "Chapter One", font: { size: 14, color: "#00aeb7", weight: "bold" } },
+      { type: "text", bbox: { x: 70, y: 130, w: 350, h: 16 }, text: "Comparing number of objects ........ 1", font: { size: 12 } },
+      { type: "text", bbox: { x: 70, y: 170, w: 120, h: 16 }, text: "Chapter Two", font: { size: 14, color: "#00aeb7", weight: "bold" } },
+      { type: "text", bbox: { x: 70, y: 195, w: 350, h: 16 }, text: "Counting objects ........ 4", font: { size: 12 } },
+    ],
+  },
+  {},
+  { tocTitle: "Table of contents", tocEntries: [] },
+);
+assert.match(sourceRecoveredTocHtml, /Chapter One/);
+assert.match(sourceRecoveredTocHtml, /Comparing number of objects/);
+assert.match(sourceRecoveredTocHtml, /Chapter Two/);
+assert.match(sourceRecoveredTocHtml, /Counting objects/);
+assert.match(sourceRecoveredTocHtml, /data-id="page-3-toc-0"/);
 
 const vectorAnswerBoxesHtml = createGeometryStoryboardHtml(
   {
@@ -1202,6 +1265,47 @@ assert.equal(
 assert.match(vectorAnswerBoxesHtml, /data-correct-answer="2"/);
 assert.match(vectorAnswerBoxesHtml, /data-correct-answer="4"/);
 assert.match(vectorAnswerBoxesHtml, /data-correct-answer="7"/);
+
+const imageOperationTableHtml = createGeometryStoryboardHtml(
+  {
+    number: 45,
+    width: 500,
+    height: 700,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 55, y: 55, w: 90, h: 18 }, text: "Exercise 3", font: { size: 14 } },
+      { type: "text", bbox: { x: 55, y: 85, w: 340, h: 18 }, text: "Write the answer in each blank space provided.", font: { size: 12 } },
+      { type: "text", bbox: { x: 180, y: 180, w: 18, h: 18 }, text: "4", font: { size: 12 } },
+      { type: "text", bbox: { x: 230, y: 180, w: 18, h: 18 }, text: "−", font: { size: 12 } },
+      { type: "text", bbox: { x: 280, y: 180, w: 18, h: 18 }, text: "3", font: { size: 12 } },
+      { type: "text", bbox: { x: 340, y: 180, w: 18, h: 18 }, text: "=", font: { size: 12 } },
+      { type: "text", bbox: { x: 180, y: 330, w: 18, h: 18 }, text: "9", font: { size: 12 } },
+      { type: "text", bbox: { x: 230, y: 330, w: 18, h: 18 }, text: "−", font: { size: 12 } },
+      { type: "text", bbox: { x: 280, y: 330, w: 18, h: 18 }, text: "8", font: { size: 12 } },
+      { type: "text", bbox: { x: 340, y: 330, w: 18, h: 18 }, text: "=", font: { size: 12 } },
+      { type: "text", bbox: { x: 180, y: 480, w: 18, h: 18 }, text: "9", font: { size: 12 } },
+      { type: "text", bbox: { x: 230, y: 480, w: 18, h: 18 }, text: "−", font: { size: 12 } },
+      { type: "text", bbox: { x: 280, y: 480, w: 18, h: 18 }, text: "6", font: { size: 12 } },
+      { type: "text", bbox: { x: 340, y: 480, w: 18, h: 18 }, text: "=", font: { size: 12 } },
+      ...[170, 320, 470].flatMap((y) => [
+        { type: "image" as const, bbox: { x: 390, y, w: 55, h: 2 } },
+        { type: "image" as const, bbox: { x: 390, y: y + 32, w: 55, h: 2 } },
+        { type: "image" as const, bbox: { x: 390, y, w: 2, h: 32 } },
+        { type: "image" as const, bbox: { x: 445, y, w: 2, h: 32 } },
+      ]),
+    ],
+    assets: [
+      { id: "row-1-image", kind: "image", blob: new Blob(), bounds: { x: 70, y: 120, w: 90, h: 90 } },
+      { id: "row-2-image", kind: "image", blob: new Blob(), bounds: { x: 70, y: 270, w: 90, h: 90 } },
+      { id: "row-3-image", kind: "image", blob: new Blob(), bounds: { x: 70, y: 420, w: 90, h: 90 } },
+    ],
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#00aeb7" } },
+);
+assert.equal((imageOperationTableHtml.match(/data-placement-evidence="equals-anchored-answer-box"/g) ?? []).length, 3);
+assert.match(imageOperationTableHtml, /data-correct-answer="1"/);
+assert.match(imageOperationTableHtml, /data-correct-answer="3"/);
+assert.doesNotMatch(imageOperationTableHtml, /background:color-mix\(in srgb,#00aeb7 2%,#fff\)/);
 
 const arithmeticHtml = createGeometryStoryboardHtml(
   {

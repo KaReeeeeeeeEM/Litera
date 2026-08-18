@@ -754,16 +754,46 @@ function StagePage({
             pages,
             concurrency,
             async (sourcePage) => {
-              const storyboardPage = await renderStoryboardSourcePage({
-                book,
-                sourcePage,
-                structuredPages,
-                tableOfContents,
-                publicationPalette,
-                providerKeys: providerConfigured ? providerKeys : undefined,
-                visionProvider,
-                signal: controller.signal,
-              });
+              let storyboardPage: Awaited<ReturnType<typeof renderStoryboardSourcePage>>;
+              try {
+                storyboardPage = await withStoryboardPageTimeout(
+                  renderStoryboardSourcePage({
+                    book,
+                    sourcePage,
+                    structuredPages,
+                    tableOfContents,
+                    publicationPalette,
+                    providerKeys: providerConfigured ? providerKeys : undefined,
+                    visionProvider,
+                    signal: controller.signal,
+                  }),
+                  18_000,
+                  controller.signal,
+                );
+              } catch (error) {
+                if (isAbortError(error)) throw error;
+                const extractedPage = book.extractedPages?.find(
+                  (page) => page.number === sourcePage.pageNumber,
+                );
+                if (!extractedPage) throw error;
+                const accent = publicationPalette.find((color) =>
+                  /^#[0-9a-f]{6}$/i.test(color),
+                ) ?? "#02acaf";
+                const digitalPageNumber =
+                  structuredPages.findIndex(
+                    (page) => page.pageNumber === sourcePage.pageNumber,
+                  ) + 1;
+                const recoveredPage = await createGeometryStoryboardPage(
+                  sourcePage,
+                  { ...extractedPage, assets: [] },
+                  {
+                    fontFamily: book.conversionConfig?.fontFamily || undefined,
+                    digitalPageNumber,
+                    decoration: { top: "#ffffff", bottom: "#ffffff", accent },
+                  },
+                );
+                storyboardPage = { ...recoveredPage, digitalPageNumber };
+              }
               controller.signal.throwIfAborted();
               persistChain = persistChain.then(async () => {
                 const storyboardPages = [
@@ -1302,7 +1332,30 @@ function StagePage({
         onConfigureProvider();
         return;
       }
-      const catalogs = Object.values(book.languageCatalogs ?? {});
+      const sourceLanguage =
+        book.conversionConfig?.editingLanguage &&
+        book.conversionConfig.editingLanguage !== "auto"
+          ? book.conversionConfig.editingLanguage
+          : (book.metadata?.languageCode ?? "en");
+      const currentSourceEntries = buildTextCatalog(book);
+      const storedCatalogs = Object.values(book.languageCatalogs ?? {});
+      const catalogs = storedCatalogs.some(
+        (catalog) => baseLanguage(catalog.language) === baseLanguage(sourceLanguage),
+      )
+        ? storedCatalogs.map((catalog) =>
+            baseLanguage(catalog.language) === baseLanguage(sourceLanguage)
+              ? { ...catalog, entries: currentSourceEntries }
+              : catalog,
+          )
+        : [
+            ...storedCatalogs,
+            {
+              language: sourceLanguage,
+              sourceLanguage,
+              entries: currentSourceEntries,
+              generatedAt: new Date().toISOString(),
+            },
+          ];
       if (!catalogs.length) {
         toast.error(
           "Run Language before Speech so narration follows the translated catalogs.",
@@ -1318,8 +1371,17 @@ function StagePage({
       runController.current = controller;
       setProcessing(true);
       try {
+        const sourceReadingOrder = new Map(
+          buildTextCatalog(book).map((entry, entryIndex) => [entry.id, entryIndex]),
+        );
         const speakableCatalogItems = catalogs.flatMap((catalog) =>
-          catalog.entries
+          [...catalog.entries]
+            .sort(
+              (a, b) =>
+                a.pageNumber - b.pageNumber ||
+                (sourceReadingOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+                  (sourceReadingOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+            )
             .filter((entry) =>
               isSpeakableText(prepareTextForSpeech(entry.text)),
             )
@@ -1344,12 +1406,30 @@ function StagePage({
             entry.voice === requestedVoice &&
             entry.speed === requestedSpeed,
         );
+        const speechKeyFor = (language: string, text: string) =>
+          `${language}\u0000${requestedVoice}\u0000${requestedSpeed}\u0000${text.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase()}`;
+        const reusableSpeech = new Map(
+          persistedSpeech.map((speech) => [
+            speechKeyFor(speech.language, speech.inputText ?? ""),
+            speech,
+          ]),
+        );
+        const reusedSpeech = speakableCatalogItems.flatMap(({ catalog, entry }) => {
+          const id = `${catalog.language}:${entry.id}`;
+          if (persistedSpeech.some((speech) => speech.id === id)) return [];
+          const inputText = prepareTextForSpeech(entry.text, catalog.language);
+          const template = reusableSpeech.get(speechKeyFor(catalog.language, inputText));
+          return template
+            ? [{ ...template, id, textId: entry.id, pageNumber: entry.pageNumber, inputText }]
+            : [];
+        });
+        const initialSpeechEntries = [...persistedSpeech, ...reusedSpeech];
         let working: DeviceBook = {
           ...book,
-          speechEntries: persistedSpeech,
+          speechEntries: initialSpeechEntries,
           stageProgress: {
             ...book.stageProgress,
-            speech: Math.round((persistedSpeech.length / total) * 100),
+            speech: Math.round((initialSpeechEntries.length / total) * 100),
           },
           pipelineRun: {
             stage: "speech",
@@ -1360,11 +1440,19 @@ function StagePage({
         await onChange(working, "Started speech generation");
         const pending = speakableCatalogItems.filter(
           ({ catalog, entry }) =>
-            !persistedSpeech.some(
+            !initialSpeechEntries.some(
               (speech) =>
                 speech.id === `${catalog.language}:${entry.id}`,
             ),
         );
+        const pendingGroups = [...pending.reduce((groups, item) => {
+          const inputText = prepareTextForSpeech(item.entry.text, item.catalog.language);
+          const key = speechKeyFor(item.catalog.language, inputText);
+          const group = groups.get(key) ?? [];
+          group.push(item);
+          groups.set(key, group);
+          return groups;
+        }, new Map<string, typeof pending>()).values()];
         const speechConcurrency =
           book.performanceMode === "eco"
             ? 4
@@ -1372,14 +1460,15 @@ function StagePage({
               ? provider === "gemini" ? 12 : 20
               : provider === "gemini" ? 6 : 12;
         const speechCheckpointSize = speechConcurrency * 4;
-        for (let index = 0; index < pending.length; index += speechCheckpointSize) {
-          const batch = pending.slice(index, index + speechCheckpointSize);
+        for (let index = 0; index < pendingGroups.length; index += speechCheckpointSize) {
+          const batch = pendingGroups.slice(index, index + speechCheckpointSize);
           const generated = await mapWithConcurrency(
             batch,
             speechConcurrency,
-            async ({ catalog, entry }) => {
+            async (group) => {
               controller.signal.throwIfAborted();
-              return synthesizeCatalogEntry({
+              const { catalog, entry } = group[0]!;
+              const template = await synthesizeCatalogEntry({
                 entry,
                 language: catalog.language,
                 provider,
@@ -1388,13 +1477,21 @@ function StagePage({
                 speed: requestedSpeed,
                 signal: controller.signal,
               });
+              return group.map(({ catalog: targetCatalog, entry: targetEntry }) => ({
+                ...template,
+                id: `${targetCatalog.language}:${targetEntry.id}`,
+                textId: targetEntry.id,
+                language: targetCatalog.language,
+                pageNumber: targetEntry.pageNumber,
+                inputText: prepareTextForSpeech(targetEntry.text, targetCatalog.language),
+              }));
             },
             controller.signal,
           );
             controller.signal.throwIfAborted();
             const speechEntries = [
               ...(working.speechEntries ?? []),
-              ...generated,
+              ...generated.flat(),
             ];
             working = {
               ...working,
@@ -1406,7 +1503,7 @@ function StagePage({
             };
             await onChange(
               working,
-              `Generated ${generated.length} speech clips`,
+              `Generated ${generated.length} unique speech clips and reused them for ${generated.flat().length} catalog targets`,
             );
         }
         working = {
@@ -2195,6 +2292,30 @@ function yieldToBrowser() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
+async function withStoryboardPageTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
+  let timer = 0;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error(`Page rendering exceeded ${timeoutMs / 1000} seconds.`)),
+      timeoutMs,
+    );
+    signal?.addEventListener(
+      "abort",
+      () => reject(signal.reason ?? new DOMException("Stopped", "AbortError")),
+      { once: true },
+    );
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
@@ -2937,7 +3058,9 @@ async function recoverFragmentCompositeAssets(
       const canvas = document.createElement("canvas");
       canvas.width = sw;
       canvas.height = sh;
-      canvas.getContext("2d")?.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context?.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+      if (context) removeWatermarkPixels(context, sw, sh);
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, "image/png", 0.96),
       );
@@ -3623,7 +3746,7 @@ function ExtractionWorkspace({
                   let end = start;
                   while (
                     end < (book.sourceTotalPages ?? start) &&
-                    end - start < 9 &&
+                    end - start < 19 &&
                     !converted.has(end + 1)
                   ) {
                     end += 1;
@@ -3634,7 +3757,7 @@ function ExtractionWorkspace({
                 type="button"
                 variant="secondary"
               >
-                Select next 10 unconverted pages
+                Select next 20 unconverted pages
               </Button>
               <FieldGroup>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -3652,7 +3775,7 @@ function ExtractionWorkspace({
                           setAdditionalRangeEnd(
                             String(
                               Math.min(
-                                nextStart + 9,
+                                nextStart + 19,
                                 book.sourceTotalPages ?? nextStart,
                               ),
                             ),
@@ -3958,7 +4081,6 @@ function StoryboardAssistant({
   const [assistantPortal, setAssistantPortal] = useState<HTMLDivElement | null>(
     null,
   );
-  const assistantSheetRef = { current: assistantPortal };
   const prompts = book.correctionPrompts ?? [];
   const messages = book.assistantMessages ?? [];
   useEffect(
@@ -4222,7 +4344,7 @@ function StoryboardAssistant({
                 <PopoverContent
                   align="start"
                   className="w-64 p-2"
-                  portalContainer={assistantSheetRef.current}
+                  portalContainer={assistantPortal}
                 >
                   <div
                     className="max-h-64 touch-pan-y overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable] [-webkit-overflow-scrolling:touch]"
@@ -4690,14 +4812,10 @@ function isTableOfContentsPage(page: StructuredPage) {
     .filter(Boolean);
   if (/\b(table of contents|contents|yaliyomo|faharasa)\b/i.test(lines.slice(0, 8).join(" ")))
     return true;
-  const leaderRows = lines.filter((line) => /\S\s*\.{2,}\s*\d{1,4}\s*$/.test(line));
-  const numberedRows = lines.filter(
-    (line) =>
-      line.length <= 140 &&
-      /[A-Za-zÀ-ž]\S*(?:\s+\S+){0,12}\s+\d{1,4}\s*$/.test(line),
-  );
   const looksLikeExercise = /\b(?:exercise|activity|questions?|zoezi|shughuli|maswali|jibu|andika)\b/i.test(lines.join(" "));
-  return leaderRows.length >= 3 || (!looksLikeExercise && numberedRows.length >= 5);
+  const leaderOccurrences =
+    lines.join(" ").match(/\.{2,}\s*(?:\d{1,4}|[ivxlcdm]+)\b/gi) ?? [];
+  return !looksLikeExercise && leaderOccurrences.length >= 3;
 }
 function buildTableOfContents(book: DeviceBook) {
   const pages = [...(book.structuredPages ?? [])].sort(
@@ -4743,21 +4861,39 @@ function buildTableOfContents(book: DeviceBook) {
       }
     }
   }
-  const printedTitles = pages
-    .filter(isTableOfContentsPage)
-    .flatMap((page) => [page.title, ...page.sections.map((section) => section.text)])
+  const contentsPageNumbers = new Set(
+    pages.filter(isTableOfContentsPage).map((page) => page.pageNumber),
+  );
+  const extractedContentsText = (book.extractedPages ?? [])
+    .filter((page) => {
+      const text = page.text?.replace(/\s+/g, " ").trim() ?? "";
+      const leaders = text.match(/\.{3,}\s*(?:\d{1,4}|[ivxlcdm]+)\b/gi) ?? [];
+      return contentsPageNumbers.has(page.number) || leaders.length >= 3;
+    })
+    .map((page) => page.text ?? "");
+  const printedTitles = [
+    ...pages
+      .filter((page) => contentsPageNumbers.has(page.pageNumber))
+      .flatMap((page) => [page.title, ...page.sections.map((section) => section.text)]),
+    ...extractedContentsText,
+  ]
     .flatMap(extractPrintedContentsTitles)
     .map((value) =>
       value
         .replace(/\s*\.{2,}\s*(?:\d{1,4}|[ivxlcdm]+)\s*$/i, "")
         .replace(/\s+(?:\d{1,4}|[ivxlcdm]+)\s*$/i, "")
+        .replace(
+          /^(?:\d+|[ivxlcdm]+)\s+(?=(?:chapter|unit|sura)\b)/i,
+          "",
+        )
         .replace(/\s+/g, " ")
         .trim(),
     )
     .filter(
       (value) =>
         value.length >= 4 &&
-        !/^(?:table of contents|contents|yaliyomo|faharasa|\.{2,}|\d+|[ivxlcdm]+)$/i.test(value),
+        !/^(?:table of contents|contents|yaliyomo|faharasa|\.{2,}|\d+|[ivxlcdm]+)$/i.test(value) &&
+        !/^(?:chapter|unit|sura(?:\s+ya)?)\b/i.test(value),
     );
   for (const title of printedTitles) {
     const key = title.toLocaleLowerCase();
@@ -4785,6 +4921,38 @@ function buildTableOfContents(book: DeviceBook) {
       level: /^(?:sura|chapter|unit)\b/i.test(title) ? 1 : 2,
     });
   }
+  // A partial conversion should still expose every chapter that is actually
+  // present, even when source TOC extraction split the chapter label from its
+  // dotted topic row or a watermark interrupted that row.
+  for (const page of pages) {
+    if (contentsPageNumbers.has(page.pageNumber)) continue;
+    const texts = [page.title, ...page.sections.slice(0, 10).map((section) => section.text)]
+      .map((text) => text.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    const chapter = texts.find((text) =>
+      /^(?:chapter|unit|sura(?:\s+ya)?)\s+[\p{L}\p{N}-]+\b/iu.test(text),
+    );
+    if (!chapter) continue;
+    const digitalPageNumber = pages.findIndex(
+      (candidate) => candidate.pageNumber === page.pageNumber,
+    ) + 1;
+    const chapterKey = chapter.toLocaleLowerCase();
+    if (!seen.has(chapterKey)) {
+      seen.add(chapterKey);
+      entries.push({ title: chapter, pageNumber: digitalPageNumber, level: 1 });
+    }
+    const subtitle = texts.find(
+      (text) =>
+        text !== chapter &&
+        text.length <= 100 &&
+        !/^\d+$/.test(text) &&
+        !/\b(?:exercise|activity|zoezi|example)\b/i.test(text),
+    );
+    if (subtitle && !seen.has(subtitle.toLocaleLowerCase())) {
+      seen.add(subtitle.toLocaleLowerCase());
+      entries.push({ title: subtitle, pageNumber: digitalPageNumber, level: 2 });
+    }
+  }
   entries.sort((a, b) => a.pageNumber - b.pageNumber || a.level - b.level);
   return entries;
 }
@@ -4806,14 +4974,25 @@ function extractPrintedContentsTitles(value: string) {
 function bestContentsDestination(title: string, pages: StructuredPage[]) {
   const tokens = semanticTitleTokens(title);
   if (!tokens.length) return undefined;
+  const chapterMarker = title.match(
+    /^(?:chapter|unit|sura(?:\s+ya)?)\s+([\p{L}\p{N}-]+)/iu,
+  )?.[1]?.toLocaleLowerCase();
   let best: { page: StructuredPage; score: number; matches: number } | undefined;
   for (const page of pages) {
     if (isTableOfContentsPage(page)) continue;
-    const pageTokens = new Set(
-      semanticTitleTokens(
-        [page.title, ...page.sections.slice(0, 8).map((section) => section.text)].join(" "),
-      ),
-    );
+    const pageHeadingText = [
+      page.title,
+      ...page.sections.slice(0, 8).map((section) => section.text),
+    ].join(" ");
+    if (
+      chapterMarker &&
+      !new RegExp(
+        `\\b(?:chapter|unit|sura(?:\\s+ya)?)\\s+${escapeRegExp(chapterMarker)}\\b`,
+        "iu",
+      ).test(pageHeadingText)
+    )
+      continue;
+    const pageTokens = new Set(semanticTitleTokens(pageHeadingText));
     const matches = tokens.filter((token) => pageTokens.has(token)).length;
     const score = matches / tokens.length;
     if (!best || score > best.score) best = { page, score, matches };
@@ -4825,7 +5004,20 @@ function bestContentsDestination(title: string, pages: StructuredPage[]) {
 }
 
 function semanticTitleTokens(value: string) {
-  const ignored = new Set(["the", "and", "of", "ya", "na", "wa", "la"]);
+  const ignored = new Set([
+    "the",
+    "and",
+    "of",
+    "ya",
+    "na",
+    "wa",
+    "la",
+    "chapter",
+    "unit",
+    "sura",
+    "number",
+    "numbers",
+  ]);
   return [
     ...new Set(
       (value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
@@ -4893,19 +5085,36 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     throw new Error(
       `Page ${sourcePage.pageNumber} has no extracted source image.`,
     );
+  const oralOnlyPage = /\b(?:read|practise|practice)\s+(?:the\s+.+\s+)?aloud\b|\borally\b|\bsoma\s+kwa\s+sauti\b/i.test(
+    [
+      extractedPage.text ?? "",
+      sourcePage.title,
+      ...sourcePage.sections.map((section) => section.text),
+    ].join(" "),
+  );
   const thumbnail = await storyboardPhase(
     `Restoring page ${sourcePage.pageNumber} image`,
     () => readablePageImage(book, extractedPage),
   );
-  const assets = await storyboardPhase(
-    `Restoring page ${sourcePage.pageNumber} visuals`,
-    () => ensurePageAssets(book, { ...extractedPage, thumbnail }),
-  );
+  const assets = oralOnlyPage
+    ? []
+    : await storyboardPhase(
+        `Restoring page ${sourcePage.pageNumber} visuals`,
+        () => ensurePageAssets(book, { ...extractedPage, thumbnail }),
+      );
   const renderPage = { ...extractedPage, thumbnail, assets };
-  const sampledDecoration = await storyboardPhase(
-    `Sampling page ${sourcePage.pageNumber} design`,
-    () => samplePageDecoration(thumbnail),
-  );
+  const sampledDecoration = oralOnlyPage
+    ? {
+        top: "#ffffff",
+        bottom: "#ffffff",
+        accent:
+          publicationPalette.find((color) => /^#[0-9a-f]{6}$/i.test(color)) ??
+          "#02acaf",
+      }
+    : await storyboardPhase(
+        `Sampling page ${sourcePage.pageNumber} design`,
+        () => samplePageDecoration(thumbnail),
+      );
   const decoration = harmonizePageDecoration(
     sampledDecoration,
     publicationPalette,
@@ -5151,6 +5360,10 @@ async function rerenderPageFromAssistant(
     ...book,
     storyboardPages,
     storyboardCss,
+    // Page-specific rerenders can change a TOC continuation or introduce a
+    // newly detected chapter. Keep the reader drawer in sync with the same
+    // authoritative contents used to rebuild the page.
+    tableOfContents,
     correctionPrompts: (book.correctionPrompts ?? []).filter(
       (prompt) => prompt.id !== promptId,
     ),
@@ -5628,7 +5841,12 @@ function reinforceTablesAndActivities(
       const control = activityControlHtml(activity);
       const target =
         findActivityTarget(document, activity.prompt) ??
-        (activity.type === "matching"
+        (activity.type === "drawing"
+          ? (findActivityTarget(document, "trace") ??
+            findActivityTarget(document, "draw") ??
+            findActivityTarget(document, "copy") ??
+            findActivityTarget(document, "fuatisha"))
+          : activity.type === "matching"
           ? (findActivityTarget(document, "match") ??
             findActivityTarget(document, "oanisha") ??
             findActivityTarget(document, "linganisha"))
@@ -5656,6 +5874,10 @@ function reinforceTablesAndActivities(
         target &&
         ["true-false", "multiple-choice", "matching"].includes(activity.type)
       ) {
+        insertActivityControl(target, control);
+        continue;
+      }
+      if (target && activity.type === "drawing") {
         insertActivityControl(target, control);
         continue;
       }
@@ -5694,6 +5916,19 @@ function reinforceTablesAndActivities(
         document
           .querySelector("main[data-litera-page]")
           ?.insertAdjacentHTML("beforeend", control);
+    }
+    // A visual matching exercise may have no extractable text pairs because
+    // its left column consists entirely of pictures. It must still expose an
+    // accessible matching control instead of remaining a static illustration.
+    for (const activity of activities.filter(
+      (candidate) => candidate.type === "matching",
+    )) {
+      if (document.querySelector(`[data-activity-item="${activity.id}"]`))
+        continue;
+      const target =
+        findActivityTarget(document, activity.prompt) ??
+        findActivityTarget(document, "match");
+      if (target) insertActivityControl(target, activityControlHtml(activity));
     }
     const answerControls = document.querySelectorAll(
       ".litera-response input:not([type=hidden]), .litera-response select, .litera-response textarea, .source-answer-line input",
@@ -5948,6 +6183,14 @@ function findActivityTarget(document: Document, prompt: string) {
   return best?.element.closest("p, li, div") ?? best?.element;
 }
 
+function traceTargetFromPrompt(prompt: string) {
+  const digitWords: Record<string, string> = { zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5", six: "6", seven: "7", eight: "8", nine: "9", sifuri: "0", moja: "1", mbili: "2", tatu: "3", nne: "4", tano: "5", sita: "6", saba: "7", nane: "8", tisa: "9" };
+  const explicit = prompt.match(/\b(?:trace|copy|write|fuatisha)\s+(?:the\s+)?(?:number|numeral|letter)?\s*([0-9A-Za-z])\b/i)?.[1];
+  if (explicit) return explicit;
+  const word = prompt.toLocaleLowerCase().match(/\b(zero|one|two|three|four|five|six|seven|eight|nine|sifuri|moja|mbili|tatu|nne|tano|sita|saba|nane|tisa)\b/)?.[1];
+  return word ? digitWords[word] : undefined;
+}
+
 function activityControlHtml(activity: StructuredPage["activities"][number]) {
   const label = escapeHtmlAttribute(
     activity.prompt.slice(0, 100) || "Learner response",
@@ -5990,8 +6233,10 @@ function activityControlHtml(activity: StructuredPage["activities"][number]) {
     }
     return `<details class="litera-matching-game" data-activity-item="${activity.id}"><summary>Play matching activity</summary><label class="litera-response litera-response--stack"><span>Choose or type the matching item</span><input type="text" autocomplete="off" aria-label="${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1">${feedback()}</label></details>`;
   }
-  if (activity.type === "drawing")
-    return `<fieldset class="litera-response litera-response--stack" data-activity-item="${activity.id}" style="padding:.65em;border:.12em solid #8a8f98;border-radius:.55em;background:#fff"><legend>${label}</legend><canvas data-litera-drawing-canvas width="900" height="420" role="img" aria-label="Drawing area: ${label}" style="display:block;width:100%;height:auto;aspect-ratio:15/7;touch-action:none;border:.1em solid #9ca3af;border-radius:.35em;background:transparent"></canvas><button type="button" data-litera-clear-drawing style="justify-self:start;padding:.35em .7em;border:.1em solid #6b7280;border-radius:.35em;background:#fff">Clear drawing</button><label><span>Optional description of the drawing</span><textarea aria-label="Description: ${label}"></textarea></label></fieldset>`;
+  if (activity.type === "drawing") {
+    const traceTarget = traceTargetFromPrompt(activity.prompt);
+    return `<fieldset class="litera-response litera-response--stack" data-activity-item="${activity.id}" style="padding:.65em;border:.12em solid #8a8f98;border-radius:.55em;background:#fff"><legend>${label}</legend><canvas data-litera-trace-canvas${traceTarget ? ` data-trace-target="${escapeHtmlAttribute(traceTarget)}"` : ""} width="900" height="420" role="img" aria-label="${traceTarget ? `Trace ${escapeHtmlAttribute(traceTarget)}` : `Drawing area: ${label}`}" style="display:block;width:100%;height:auto;aspect-ratio:15/7;touch-action:none;border:.1em solid #9ca3af;border-radius:.35em;background:#fff"></canvas><div style="display:flex;gap:.5em;flex-wrap:wrap"><button type="button" data-litera-clear-drawing>Clear drawing</button><button type="button" data-litera-check-drawing>Check drawing</button></div><span data-litera-drawing-feedback role="status" aria-live="polite"></span><label><span>Optional description of the drawing</span><textarea placeholder="Describe your drawing if you cannot use the canvas" aria-label="Description: ${label}"></textarea></label></fieldset>`;
+  }
   if (activity.type === "fill-blank")
     return `<fieldset class="litera-response-set" style="--answer-count:${activity.answerCount ?? 1}" data-activity-item="${activity.id}"><legend class="sr-only">${label}</legend>${Array.from(
       { length: activity.answerCount ?? 1 },
@@ -6004,10 +6249,15 @@ function activityControlHtml(activity: StructuredPage["activities"][number]) {
 }
 
 function answerFeedbackRuntime() {
-  return `<script data-litera-answer-feedback>(function(){var submit=document.querySelector('[data-litera-submit]');var controls=Array.from(document.querySelectorAll('.litera-response input:not([type=hidden]),.litera-response select,.litera-response textarea,.source-answer-line input,.dense-question input'));var answered=function(control){if(control.type==='radio'||control.type==='checkbox')return control.checked;return Boolean(control.value&&control.value.trim())};var update=function(){if(submit)submit.disabled=!controls.some(answered)};document.addEventListener('input',function(event){var input=event.target;if(!((input instanceof HTMLInputElement)||(input instanceof HTMLSelectElement)||(input instanceof HTMLTextAreaElement)))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');update()});document.addEventListener('change',update);if(submit)submit.addEventListener('click',function(){var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var correctCount=0,checkedCount=0;controls.forEach(function(input){if(!answered(input)||!input.dataset.correctAnswer)return;checkedCount++;var correct=clean(input.value)===clean(input.dataset.correctAnswer);if(correct)correctCount++;input.dataset.answerState=correct?'correct':'incorrect';input.setAttribute('aria-invalid',String(!correct));var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback){feedback.dataset.state=correct?'correct':'incorrect';feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'}});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:checkedCount-correctCount,checked:checkedCount},'*')});update();document.querySelectorAll('[data-litera-drawing-canvas]').forEach(function(canvas){var context=canvas.getContext('2d');if(!context)return;context.lineWidth=5;context.lineCap='round';context.strokeStyle='#172554';var drawing=false;var point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();context.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);context.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});var clear=canvas.parentElement&&canvas.parentElement.querySelector('[data-litera-clear-drawing]');if(clear)clear.addEventListener('click',function(){context.clearRect(0,0,canvas.width,canvas.height)})})})()</script>`;
+  return `<script data-litera-answer-feedback>(function(){var submit=document.querySelector('[data-litera-submit]');var controls=Array.from(document.querySelectorAll('.litera-response input:not([type=hidden]),.litera-response select,.litera-response textarea,.source-answer-line input,.dense-question input'));var answered=function(control){if(control.type==='radio'||control.type==='checkbox')return control.checked;return Boolean(control.value&&control.value.trim())};var update=function(){if(submit)submit.disabled=!controls.some(answered)};document.addEventListener('input',function(event){var input=event.target;if(!((input instanceof HTMLInputElement)||(input instanceof HTMLSelectElement)||(input instanceof HTMLTextAreaElement)))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');update()});document.addEventListener('change',update);if(submit)submit.addEventListener('click',function(){var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var correctCount=0,checkedCount=0;controls.forEach(function(input){if(!answered(input)||!input.dataset.correctAnswer)return;checkedCount++;var correct=clean(input.value)===clean(input.dataset.correctAnswer);if(correct)correctCount++;input.dataset.answerState=correct?'correct':'incorrect';input.setAttribute('aria-invalid',String(!correct));var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback){feedback.dataset.state=correct?'correct':'incorrect';feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'}});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:checkedCount-correctCount,checked:checkedCount},'*')});update();document.querySelectorAll('[data-litera-drawing-canvas]').forEach(function(canvas){var context=canvas.getContext('2d');if(!context)return;context.lineWidth=5;context.lineCap='round';context.strokeStyle='#172554';var drawing=false;var point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();context.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);context.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});var clear=canvas.parentElement&&canvas.parentElement.querySelector('[data-litera-clear-drawing]');if(clear)clear.addEventListener('click',function(){context.clearRect(0,0,canvas.width,canvas.height)})})})()</script>${traceCanvasRuntime()}`;
+}
+
+function traceCanvasRuntime() {
+  return `<script data-litera-trace-runtime>(function(){document.querySelectorAll('[data-litera-trace-canvas]').forEach(function(canvas){var context=canvas.getContext('2d',{willReadFrequently:true});if(!context)return;var ink=document.createElement('canvas'),target=document.createElement('canvas');ink.width=target.width=canvas.width;ink.height=target.height=canvas.height;var inkContext=ink.getContext('2d',{willReadFrequently:true}),targetContext=target.getContext('2d',{willReadFrequently:true});if(!inkContext||!targetContext)return;var symbol=canvas.dataset.traceTarget||'';var drawTemplate=function(ctx){if(!symbol)return;ctx.save();ctx.strokeStyle='rgba(37,99,235,.42)';ctx.lineWidth=6;ctx.setLineDash([10,12]);ctx.font='bold 300px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.strokeText(symbol,canvas.width/2,canvas.height/2);ctx.restore()};drawTemplate(context);drawTemplate(targetContext);context.lineWidth=inkContext.lineWidth=12;context.lineCap=inkContext.lineCap='round';context.lineJoin=inkContext.lineJoin='round';context.strokeStyle='#172554';inkContext.strokeStyle='#172554';var drawing=false,point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();inkContext.beginPath();context.moveTo(p.x,p.y);inkContext.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);inkContext.lineTo(p.x,p.y);context.stroke();inkContext.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});var parent=canvas.closest('[data-activity-item]'),feedback=parent&&parent.querySelector('[data-litera-drawing-feedback]'),clear=parent&&parent.querySelector('[data-litera-clear-drawing]'),check=parent&&parent.querySelector('[data-litera-check-drawing]');if(clear)clear.addEventListener('click',function(){context.clearRect(0,0,canvas.width,canvas.height);inkContext.clearRect(0,0,ink.width,ink.height);drawTemplate(context);if(feedback)feedback.textContent=''});if(check)check.addEventListener('click',function(){var learner=inkContext.getImageData(0,0,ink.width,ink.height).data;if(!symbol){var marks=0;for(var i=3;i<learner.length;i+=4)if(learner[i]>40)marks++;var done=marks>250;if(feedback)feedback.textContent=done?'Drawing recorded.':'Draw in the canvas before checking.';return}var guide=targetContext.getImageData(0,0,target.width,target.height).data,coverage=0,guideCount=0,precision=0,inkCount=0,radius=10,w=canvas.width,h=canvas.height,near=function(data,x,y){for(var yy=Math.max(0,y-radius);yy<=Math.min(h-1,y+radius);yy+=2)for(var xx=Math.max(0,x-radius);xx<=Math.min(w-1,x+radius);xx+=2)if(data[(yy*w+xx)*4+3]>40)return true;return false};for(var y=0;y<h;y+=3)for(var x=0;x<w;x+=3){var offset=(y*w+x)*4;if(guide[offset+3]>40){guideCount++;if(near(learner,x,y))coverage++}if(learner[offset+3]>40){inkCount++;if(near(guide,x,y))precision++}}var score=.72*(coverage/Math.max(1,guideCount))+.28*(precision/Math.max(1,inkCount)),correct=score>=.56;if(feedback){feedback.dataset.state=correct?'correct':'incorrect';feedback.textContent=correct?'Good tracing - your line closely follows the guide.':'Keep trying - follow the dotted guide more closely.'}parent&&parent.setAttribute('data-answer-state',correct?'correct':'incorrect');parent&&parent.postMessage;window.parent.postMessage({type:'litera-answer-feedback',correct:correct?1:0,incorrect:correct?0:1,checked:1,score:Math.round(score*100)},'*')})})})()</script>`;
 }
 
 function localizedAnswerSubmitLabel(text: string) {
+  if (/\b(?:answer|question|exercise|activity|draw|write|match|count|fill|select|choose)\b/i.test(text)) return "Submit answers";
   if (/\b(?:andika|jibu|swali|sehemu|kivuli|zoezi|shughuli)\b/i.test(text)) return "Wasilisha majibu";
   if (/\b(?:réponse|question|exercice)\b/i.test(text)) return "Soumettre les réponses";
   if (/\b(?:respuesta|pregunta|ejercicio)\b/i.test(text)) return "Enviar respuestas";

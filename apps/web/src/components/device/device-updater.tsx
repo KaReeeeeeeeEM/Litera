@@ -28,6 +28,8 @@ import { Separator } from "@/components/ui/separator";
 
 type UpdateHandle = Awaited<ReturnType<typeof import("@tauri-apps/plugin-updater")["check"]>>;
 type UpdateState = "checking" | "current" | "available" | "installing" | "unavailable";
+type InstalledRelease = { version: string; body?: string | null };
+const installedReleaseKey = "litera:show-installed-release";
 
 type ParsedReleaseNotes = {
   introduction?: string;
@@ -87,6 +89,7 @@ export function DeviceUpdater() {
   const [update, setUpdate] = useState<UpdateHandle>(null);
   const [open, setOpen] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [installedRelease, setInstalledRelease] = useState<InstalledRelease | null>(null);
 
   const checkForUpdate = useCallback(async (announce = true) => {
     setState("checking");
@@ -103,7 +106,21 @@ export function DeviceUpdater() {
     }
   }, []);
 
-  useEffect(() => { const frame = window.requestAnimationFrame(() => void checkForUpdate(false)); return () => window.cancelAnimationFrame(frame); }, [checkForUpdate]);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(installedReleaseKey);
+      if (saved) {
+        const release = JSON.parse(saved) as InstalledRelease;
+        window.localStorage.removeItem(installedReleaseKey);
+        queueMicrotask(() => {
+          setInstalledRelease(release);
+          setOpen(true);
+        });
+      }
+    } catch { /* A damaged acknowledgement must never block app startup. */ }
+    const frame = window.requestAnimationFrame(() => void checkForUpdate(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [checkForUpdate]);
 
   async function install() {
     if (!update) return;
@@ -117,6 +134,7 @@ export function DeviceUpdater() {
         if (event.event === "Finished") setProgress(100);
         else if (total) setProgress(Math.min(100, Math.round((downloaded / total) * 100)));
       });
+      window.localStorage.setItem(installedReleaseKey, JSON.stringify({ version: update.version, body: update.body } satisfies InstalledRelease));
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch {
@@ -126,7 +144,8 @@ export function DeviceUpdater() {
   }
 
   const label = state === "checking" ? "Checking…" : state === "available" ? `Update to ${update?.version}` : state === "current" ? "Up to date" : "Check for updates";
-  const releaseNotes = parseReleaseNotes(update?.body);
+  const releaseNotes = parseReleaseNotes(installedRelease?.body ?? update?.body);
+  const displayedVersion = installedRelease?.version ?? update?.version;
 
   return (
     <>
@@ -155,18 +174,18 @@ export function DeviceUpdater() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">
                 <Sparkles data-icon="inline-start" />
-                New update
+                {installedRelease ? "Update installed" : "New update"}
               </Badge>
-              {update?.version ? (
-                <Badge variant="outline">Version {update.version}</Badge>
+              {displayedVersion ? (
+                <Badge variant="outline">Version {displayedVersion}</Badge>
               ) : null}
             </div>
             <DialogTitle className="text-2xl sm:text-3xl">
-              A better Litera is ready
+              {installedRelease ? "Litera was updated successfully" : "A better Litera is ready"}
             </DialogTitle>
             <DialogDescription className="max-w-3xl text-base">
               {releaseNotes.introduction ??
-                "Install the latest signed release to get these improvements."}
+                (installedRelease ? "These improvements are now available in your application." : "Install the latest signed release to get these improvements.")}
             </DialogDescription>
           </DialogHeader>
 
@@ -228,7 +247,7 @@ export function DeviceUpdater() {
 
           <Separator />
           <DialogFooter className="px-6 py-4 sm:px-8">
-            <Button
+            {installedRelease ? <Button onClick={() => { setInstalledRelease(null); setOpen(false); }}>Continue to Litera</Button> : <><Button
               disabled={state === "installing"}
               onClick={() => setOpen(false)}
               variant="outline"
@@ -242,7 +261,7 @@ export function DeviceUpdater() {
                 <Download data-icon="inline-start" />
               )}
               {state === "installing" ? "Installing…" : "Download and install"}
-            </Button>
+            </Button></>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -3,6 +3,7 @@ import type {
   DeviceBook,
   ExportArtifact,
 } from "@/components/device/device-types";
+import { buildTextCatalog } from "@/lib/device-pipeline/language-engine";
 
 export type ExportFormat =
   | "project"
@@ -129,6 +130,9 @@ async function createAdtCompatibleFiles(book: DeviceBook, title: string) {
     page_number: page.pageNumber,
   }));
   const languages = outputLanguages(book);
+  const readingOrder = new Map(
+    buildTextCatalog(book).map((entry, index) => [entry.id, index]),
+  );
 
   for (const [index, page] of pages.entries()) {
     const href = pageList[index]!.href;
@@ -201,17 +205,36 @@ async function createAdtCompatibleFiles(book: DeviceBook, title: string) {
       ),
     );
     const audioMap: Record<string, string> = {};
-    for (const entry of (book.speechEntries ?? []).filter(
-      (item) => item.language === language,
-    )) {
+    const languageSpeech = (book.speechEntries ?? [])
+      .filter((item) => item.language === language)
+      .sort(
+        (a, b) =>
+          a.pageNumber - b.pageNumber ||
+          (readingOrder.get(a.textId) ?? Number.MAX_SAFE_INTEGER) -
+            (readingOrder.get(b.textId) ?? Number.MAX_SAFE_INTEGER),
+      );
+    const timecodes: Record<string, unknown> = {};
+    for (const entry of languageSpeech) {
       const extension = entry.audio.type.includes("wav") ? "wav" : "mp3";
       const filename = `${safe(entry.textId)}.${extension}`;
       files[`content/i18n/${locale}/audio/${filename}`] =
         new Uint8Array(await entry.audio.arrayBuffer());
       audioMap[entry.textId] = filename;
+      timecodes[entry.textId] = {
+        timecodes: [
+          null,
+          {
+            word_timestamps: entry.words.map((word) => ({
+              word: word.word,
+              start: word.startMs / 1000,
+              end: word.endMs / 1000,
+            })),
+          },
+        ],
+      };
     }
     files[`content/i18n/${locale}/audios.json`] = json(audioMap);
-    files[`content/i18n/${locale}/timecode/timecode_output.json`] = json({});
+    files[`content/i18n/${locale}/timecode/timecode_output.json`] = json(timecodes);
     files[`content/i18n/${locale}/glossary.json`] = json(book.glossary ?? []);
 
     const videoMap: Record<string, string> = {};
@@ -247,7 +270,8 @@ function packagePage(
   );
   const metadata = `<meta name="title-id" content="${options.sectionId}"><meta name="page-section-id" content="${options.pageIndex}"><link rel="stylesheet" href="./content/tailwind_output.css"><link rel="stylesheet" href="./assets/fonts.css">`;
   output = output.replace(/<\/head>/i, `${metadata}</head>`);
-  const dock = `<div class="relative z-50" id="interface-container"></div><div class="relative z-50" id="nav-container"></div><script src="./assets/scorm.js"></script><script src="./assets/base.bundle.local.js"></script>`;
+  const visualReadingOrder = `<script data-litera-visual-reading-order>(function(){var main=document.querySelector('main[data-litera-page],main');if(!main)return;var nodes=Array.from(main.querySelectorAll(':scope > [data-id],:scope > [data-block-id],:scope > [data-asset-id],:scope > [data-layout-block]'));var position=function(node){var top=parseFloat(node.style.top),left=parseFloat(node.style.left);if(Number.isFinite(top)&&Number.isFinite(left))return[top,left];var rect=node.getBoundingClientRect(),parent=main.getBoundingClientRect();return[rect.top-parent.top,rect.left-parent.left]};nodes.sort(function(a,b){var ap=position(a),bp=position(b);return Math.abs(ap[0]-bp[0])>2?ap[0]-bp[0]:ap[1]-bp[1]});nodes.forEach(function(node,index){node.dataset.readingOrder=String(index);main.appendChild(node)})})()</script>`;
+  const dock = `${visualReadingOrder}<div class="relative z-50" id="interface-container"></div><div class="relative z-50" id="nav-container"></div><script src="./assets/scorm.js"></script><script src="./assets/base.bundle.local.js"></script>`;
   output = output.replace(/<\/body>/i, `${dock}</body>`);
   return output;
 }

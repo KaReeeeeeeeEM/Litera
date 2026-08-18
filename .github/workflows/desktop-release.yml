@@ -57,11 +57,12 @@ jobs:
             Litera Desktop __VERSION__ is a signed cross-platform release for accessible educational publishing.
 
             ## Highlights
-            - Source-faithful table-of-contents hierarchy, typography, colours, dotted leaders, and digital page navigation
-            - Multi-page contents support that keeps each source page's visual treatment while feeding the reader Contents pane
-            - Reliable in-place answer fields for exercise boxes drawn as PDF vectors, not only embedded images
-            - Natural textbook-matched answer borders with keyboard labels, inferred answers, submission, and feedback
-            - Regression coverage for the distinct Standard 1 and Standard 2 arithmetic contents and activity layouts
+            - More faithful textbook geometry, colours, tables, image grids, page numbers, and multi-page contents
+            - Natural interactive answer slots, matching controls, and drawing activities placed inside their source exercises
+            - Chronological full-page narration with deduplicated speech, aligned word highlighting, and localized number reading
+            - Dark fixed reader controls with table-of-contents navigation, theme controls, and fit-to-screen or dynamic page sizing
+            - Faster, recoverable storyboarding and captioning with page-scoped rerender progress and resilient AI response parsing
+            - Regression coverage across 200 activity pages plus structure, storyboard, language, speech, delivery, and conversion scope
 
             ## Upgrade
             Existing Litera Desktop installations can open **Updates** and choose **Check for updates**. New installations can download the matching macOS, Windows, Linux, or universal Android package from this release.

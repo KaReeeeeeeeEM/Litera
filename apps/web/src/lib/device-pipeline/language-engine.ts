@@ -9,24 +9,78 @@ export function buildTextCatalog(book: DeviceBook): TextCatalogEntry[] {
   const entries: TextCatalogEntry[] = [];
   const seen = new Set<string>();
   for (const page of book.storyboardPages ?? []) {
-    const document = new DOMParser().parseFromString(page.html, "text/html");
-    const elements = [...document.querySelectorAll<HTMLElement>("[data-id]")].filter(element => !element.querySelector("[data-id]") && element.tagName !== "IMG");
-    for (const [index, element] of elements.entries()) {
-      const text = element.textContent?.replace(/\s+/g, " ").trim() ?? "";
-      const id = element.dataset.id || `pg${pad(page.pageNumber)}_tx${pad(index + 1)}`;
-      if (!text || seen.has(id)) continue;
-      seen.add(id);
-      entries.push({ id, text, pageNumber: page.pageNumber });
-    }
-    if (elements.length) continue;
-    for (const [index, block] of page.blocks.filter(block => !block.hidden && block.content.trim()).entries()) {
+    type Candidate = TextCatalogEntry & { x: number; y: number; order: number; aliases: string[] };
+    const candidates: Candidate[] = [];
+    const seenPagePlacement = new Set<string>();
+    const width = Math.max(1, page.sourceWidth ?? 100);
+    const height = Math.max(1, page.sourceHeight ?? 100);
+    for (const [index, block] of page.blocks.filter((block) => !block.hidden && block.content.trim()).entries()) {
       const id = block.id || `pg${pad(page.pageNumber)}_tx${pad(index + 1)}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      entries.push({ id, text: block.content.replace(/\s+/g, " ").trim(), pageNumber: page.pageNumber });
+      const visualText = block.kind === "image" ? block.accessibleLabel || block.content : block.content;
+      const text = visualText.replace(/\s+/g, " ").trim();
+      if (block.kind === "image" && isGenericVisualNarration(text)) continue;
+      candidates.push({
+        id,
+        text,
+        pageNumber: page.pageNumber,
+        x: block.sourceBounds ? (block.sourceBounds.x / width) * 100 : 0,
+        y: block.sourceBounds ? (block.sourceBounds.y / height) * 100 : 10_000 + block.order,
+        order: block.order,
+        aliases: [block.id, block.assetId].filter((value): value is string => Boolean(value)),
+      });
+    }
+    if (typeof DOMParser !== "undefined") {
+      const document = new DOMParser().parseFromString(page.html, "text/html");
+      const selector = "[data-id],[data-block-id],[data-layout-block],[data-asset-id]";
+      const elements = [...document.querySelectorAll<HTMLElement>(selector)].filter(
+        (element) => !element.querySelector(selector) && element.tagName !== "IMG" && element.getAttribute("aria-hidden") !== "true",
+      );
+      for (const [index, element] of elements.entries()) {
+        const figureCaption = element.tagName === "FIGURE"
+          ? element.querySelector("figcaption")?.textContent || element.querySelector("img")?.getAttribute("alt")
+          : undefined;
+        const text = (figureCaption ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
+        const id = element.dataset.id || element.dataset.blockId || element.dataset.assetId || `pg${pad(page.pageNumber)}_dom${pad(index + 1)}`;
+        if (!text) continue;
+        const matching = candidates.find((candidate) => candidate.id === id || candidate.aliases.includes(id));
+        const x = percentagePosition(element.style.left);
+        const y = percentagePosition(element.style.top);
+        if (matching) {
+          if (x !== undefined) matching.x = x;
+          if (y !== undefined) matching.y = y;
+          continue;
+        }
+        candidates.push({ id, text, pageNumber: page.pageNumber, x: x ?? 0, y: y ?? 20_000 + index, order: page.blocks.length + index, aliases: [id] });
+      }
+    }
+    candidates.sort((a, b) => {
+      if (Math.abs(a.y - b.y) > 1.25) return a.y - b.y;
+      return a.x - b.x || a.order - b.order;
+    });
+    for (const candidate of candidates) {
+      const textKey = normalizeCatalogText(candidate.text);
+      const placementKey = `${textKey}\u0000${candidate.x.toFixed(2)}\u0000${candidate.y.toFixed(2)}`;
+      if (!textKey || seen.has(candidate.id) || seenPagePlacement.has(placementKey)) continue;
+      seen.add(candidate.id);
+      seenPagePlacement.add(placementKey);
+      entries.push({ id: candidate.id, text: candidate.text, pageNumber: candidate.pageNumber });
     }
   }
   return entries;
+}
+
+function percentagePosition(value: string) {
+  if (!value.endsWith("%")) return undefined;
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizeCatalogText(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+function isGenericVisualNarration(value: string) {
+  return /^(?:illustration\s+(?:for|on|accompanying)\b|visual\s+(?:awaiting|used|on)\b|mchoro\s+unaotumika\b)/i.test(value.trim());
 }
 
 export async function translateCatalog({ entries, sourceLanguage, targetLanguage, keys, provider, signal, onBatch }: { entries: TextCatalogEntry[]; sourceLanguage: string; targetLanguage: string; keys: ProviderKeys; provider: ProviderId; signal?: AbortSignal; onBatch?: (translated: TextCatalogEntry[]) => Promise<void> }): Promise<TextCatalogEntry[]> {
