@@ -6,6 +6,7 @@ import type {
   StructuredSection,
 } from "@/components/device/device-types";
 import { inferCorrectAnswers } from "@/lib/device-pipeline/math-content-engine";
+import { collapseRepeatedDisplayText } from "@/lib/device-pipeline/text-layer-deduplication";
 
 const listPattern = /^\s*(?:[-*•]|\d+[.)])\s+(.+)$/;
 const activityHeadingPattern =
@@ -158,10 +159,119 @@ function detectNoInputActivities(
 
 function isExplicitNoInputInstruction(text: string) {
   const explicitNoInput =
-    /\borally\b|\baloud\b|\b(?:listen|repeat|pronounce|say|tell|discuss|observe|study|act out|sing|role[- ]?play|demonstrate)\b|\b(?:work|ask and answer) in pairs?\b|\bsoma\s+kwa\s+sauti\b|\bsema\s+kwa\s+sauti\b/i;
+    /\borally\b|\baloud\b|\bcount\s+and\s+read\b|\b(?:listen|repeat|pronounce|say|tell|discuss|observe|study|act out|sing|role[- ]?play|demonstrate)\b|\b(?:work|ask and answer) in pairs?\b|\bsoma\s+kwa\s+sauti\b|\bsema\s+kwa\s+sauti\b/i;
   const writtenStage =
     /\b(?:then|and)\s+(?:write|answer in writing|record|complete|andika|jibu kwa kuandika|jaza)\b/i;
   return explicitNoInput.test(text) && !writtenStage.test(text);
+}
+
+/**
+ * Link activity sections that visibly continue across a physical page break.
+ * The detector deliberately abstains at chapter/unit/new-exercise boundaries.
+ * This mirrors ADT's source-page provenance without merging the physical pages:
+ * Litera retains pagination while the Structure UI and storyboard know that the
+ * second page belongs to the same pedagogical activity.
+ */
+export function linkActivityContinuations(
+  pages: StructuredPage[],
+  sources: Array<{
+    number: number;
+    text?: string;
+    layoutBlocks?: ExtractedLayoutBlock[];
+    assets?: Array<{ bounds: { w: number; h: number } }>;
+  }>,
+) {
+  const ordered = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
+  return ordered.map((page, index) => {
+    const previous = ordered[index - 1];
+    const previousActivity = previous?.activities.at(-1);
+    if (!previous || !previousActivity) return page;
+    const source = sources.find((candidate) => candidate.number === page.pageNumber);
+    const sourceText = (source?.layoutBlocks ?? [])
+      .filter((block) => block.type === "text" && block.text?.trim())
+      .sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x)
+      .map((block) => block.text!.trim())
+      .join(" ") || source?.text || page.sections.map((section) => section.text).join(" ");
+    // Use the content that survived structuring for boundary decisions. Raw
+    // PDF/OCR text often contains an invisible running chapter title or a
+    // watermark before the visible continuation, which used to make page 9
+    // look like a new section even though the exercise plainly continues.
+    const structuredText = page.sections
+      .map((section) => section.text.trim())
+      .filter(Boolean)
+      .join(" ");
+    const boundaryText = structuredText || sourceText;
+    const startsNewSection = /^(?:chapter|unit|sura)\b/i.test(
+      boundaryText.trim().slice(0, 240),
+    );
+    if (startsNewSection) return page;
+    const imageCount =
+      (source?.layoutBlocks ?? []).filter(
+        (block) => block.type === "image" && block.bbox.w * block.bbox.h > 100,
+      ).length +
+      (source?.assets ?? []).filter(
+        (asset) => asset.bounds.w * asset.bounds.h > 100,
+      ).length;
+    const cleanMeaningfulText = (value: string) => value
+      .replace(/for online (?:reading|use) only/gi, "")
+      .replace(/\b\d+\b/g, "")
+      .replace(/[^\p{L}]+/gu, " ")
+      .trim();
+    const structuredMeaningfulText = cleanMeaningfulText(structuredText);
+    const sourceMeaningfulText = cleanMeaningfulText(sourceText);
+    // Prefer the visible structured reading stream. Fall back to OCR only
+    // when structuring genuinely found useful prose.
+    const meaningfulText = structuredMeaningfulText || sourceMeaningfulText;
+    // OCR commonly sees only the printed folio and watermark on a full-page
+    // illustrated continuation. When the preceding physical page ended in an
+    // activity and no new chapter/exercise boundary exists, that sparse page
+    // is continuation evidence even if PDF image extraction represented the
+    // illustrations as one composed asset rather than several small assets.
+    const visualOnlyContinuation = structuredMeaningfulText.length < 24;
+    const continuationSignal =
+      /^(?:count\s+and\s+read|continue|continued|mwendelezo)\b/i.test(sourceText.trim()) ||
+      visualOnlyContinuation ||
+      (imageCount >= 4 && /\b(?:count|identify|match|compare|read)\b/i.test(sourceText));
+    if (!continuationSignal) return page;
+    if (page.activities.length)
+      return {
+        ...page,
+        activities: page.activities.map((activity) => ({
+          ...(activity.responseMode === "none" &&
+          previousActivity.responseMode !== "none"
+            ? {
+                ...previousActivity,
+                id: activity.id,
+                pageNumber: page.pageNumber,
+                sourceBounds: undefined,
+              }
+            : activity),
+          continuationOf: previousActivity.continuationOf ?? previousActivity.id,
+          continuationFromPage: previousActivity.continuationFromPage ?? previous.pageNumber,
+        })),
+      };
+    return {
+      ...page,
+      activities: [{
+        ...previousActivity,
+        id: `page-${page.pageNumber}-continued-${previousActivity.id}`,
+        pageNumber: page.pageNumber,
+        // Illustrated comparison questions often print their instruction on
+        // the first page and only the remaining choices on the next page.
+        // Preserve the owning response contract so the continuation remains
+        // answerable and participates in marking.
+        type: previousActivity.type,
+        responseMode: previousActivity.responseMode,
+        accessibilityHint: previousActivity.accessibilityHint,
+        noInputReason: previousActivity.noInputReason,
+        prompt: previousActivity.prompt,
+        confidence: Math.min(previousActivity.confidence, 0.82),
+        continuationOf: previousActivity.continuationOf ?? previousActivity.id,
+        continuationFromPage: previousActivity.continuationFromPage ?? previous.pageNumber,
+        sourceBounds: undefined,
+      }],
+    };
+  });
 }
 
 function geometryActivityFallback(
@@ -274,6 +384,11 @@ function structureGeometry(
         block.text?.trim() &&
         !/for online (?:reading|use) only|\.indd\s+\d/i.test(block.text),
     )
+    .map((block) => {
+      if (((block.font?.size ?? 0) < 14 && block.bbox.h < 16) || !block.text) return block;
+      const text = collapseRepeatedDisplayText(block.text);
+      return text === block.text ? block : { ...block, text };
+    })
     .sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x);
   if (lines.length < 3) return [];
   const sizes = lines
@@ -399,12 +514,15 @@ function responsePresentation(text: string, type: ActivityType) {
       /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten)\b/gi,
     ),
   ].map((match) => match[1]!.toLocaleLowerCase());
+  const sequenceAnswers = inferSequenceAnswers(text);
   const answerCount =
     type === "fill-blank"
       ? Math.max(1, (text.match(/(?:[_–—-]\s*){3,}/g) ?? []).length)
       : /\bwrite\b.*\b(?:numbers?|numerals?)\b/i.test(text) &&
           numberWordAnswers.length >= 2
         ? numberWordAnswers.length
+      : sequenceAnswers.length >= 2
+        ? sequenceAnswers.length
       : 1;
   return {
     inputType: time ? ("time" as const) : ("text" as const),
@@ -416,6 +534,25 @@ function responsePresentation(text: string, type: ActivityType) {
     multiline,
     answerCount,
   };
+}
+
+function inferSequenceAnswers(text: string) {
+  const values = [...text.matchAll(/\b(\d{1,3})\b/g)]
+    .map((match) => Number(match[1]))
+    .filter(Number.isFinite);
+  // Fixed-layout extraction commonly appends the printed folio after the
+  // final exercise row. It is not another sequence item. A terminal value
+  // well outside the exercise's local range is therefore discarded.
+  if (
+    values.length >= 3 &&
+    values.at(-1)! >= Math.max(...values.slice(0, -1)) + 5
+  )
+    values.pop();
+  if (/\b(?:comes?\s+next|number\s+after|next\s+number)\b/i.test(text))
+    return values.map((value) => String(value + 1));
+  if (/\b(?:number\s+before|comes?\s+before|previous\s+number)\b/i.test(text))
+    return values.map((value) => String(Math.max(0, value - 1)));
+  return [];
 }
 
 function activityMetadata(type: ActivityType) {
@@ -516,6 +653,58 @@ function matchingPairsFromColumns(source: string) {
     : [];
 }
 
+const NUMBER_WORD_VALUES: Record<string, string> = {
+  zero: "0",
+  one: "1",
+  two: "2",
+  three: "3",
+  four: "4",
+  five: "5",
+  six: "6",
+  seven: "7",
+  eight: "8",
+  nine: "9",
+  ten: "10",
+  eleven: "11",
+  twelve: "12",
+};
+
+// A word-to-number matching table (e.g. "eleven" printed beside "11", with no
+// "1. eleven - 11" inline format and no "Column A/Column B" header) has no
+// geometry-independent separator for matchingPairs/matchingPairsFromColumns
+// to key off. The pairing isn't actually ambiguous, though: number words map
+// to their numerals from a small, closed vocabulary, so a page whose columns
+// contain exactly the same count of number-words and bare numerals can be
+// paired by dictionary lookup alone, with no positional correlation needed.
+function matchingPairsFromNumberWords(prompt: string, source: string) {
+  if (!/\bword.*\bnumber|\bnumber.*\bword/i.test(prompt)) return [];
+  // OCR frequently splits the "fi" ligature onto its own token (e.g. "fi ve",
+  // "fi ngers" for "five"/"fingers") - a book-wide extraction artifact, not
+  // specific to any one page - so "five" must tolerate an optional space.
+  const words = [
+    ...new Set(
+      [...source.matchAll(/\b(zero|one|two|three|four|fi\s?ve|six|seven|eight|nine|ten|eleven|twelve)\b/gi)].map(
+        (match) => match[1]!.toLocaleLowerCase().replace(/\s+/g, ""),
+      ),
+    ),
+  ];
+  if (words.length < 2) return [];
+  const numeralMatches = [...source.matchAll(/\b\d{1,2}\b/g)];
+  let numerals = [...new Set(numeralMatches.map((match) => match[0]))];
+  if (numerals.length === words.length + 1) {
+    // `source` lists blocks in reading order (top-to-bottom, then left-to-
+    // right - see the geometryText sort in detectActivities), and the page's
+    // own printed folio is a lone bare numeral that reliably sits after every
+    // other block, i.e. last here - not one of the matching exercise's own
+    // answers. Only drop it when doing so resolves a clean one-off surplus,
+    // never when the mismatch is larger (an unrelated, unexplained gap).
+    const lastNumeralValue = numeralMatches.at(-1)![0];
+    numerals = numerals.filter((value) => value !== lastNumeralValue);
+  }
+  if (words.length !== numerals.length) return [];
+  return words.map((word) => ({ left: word, right: NUMBER_WORD_VALUES[word]! }));
+}
+
 function numberWordCorrectAnswers(prompt: string) {
   if (!/\bwrite\b.*\b(?:numbers?|numerals?)\b/i.test(prompt)) return [];
   const values: Record<string, string> = {
@@ -541,12 +730,26 @@ export function detectActivities(
   sourceText: string,
   layoutBlocks: ExtractedLayoutBlock[] = [],
 ): StructuredActivity[] {
+  // The same diagonal "FOR ONLINE READING ONLY"-style watermark that
+  // structureGeometry already excludes from reading-flow text was never
+  // filtered here, so it was getting swept into activity prompts (and from
+  // there into aria-labels built from those prompts) whenever a watermark
+  // block fell inside an activity's text span.
+  const isWatermarkBlock = (text: string) =>
+    /for online (?:reading|use) only|\.indd\s+\d/i.test(text);
   const geometryText = layoutBlocks
-    .filter((block) => block.type === "text" && block.text?.trim())
+    .filter(
+      (block) =>
+        block.type === "text" &&
+        block.text?.trim() &&
+        !isWatermarkBlock(block.text),
+    )
     .sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x)
     .map((block) => block.text!.trim())
     .join("\n");
-  const activitySource = geometryText.length > 20 ? geometryText : sourceText;
+  const activitySource = (
+    geometryText.length > 20 ? geometryText : sourceText
+  ).replace(/\bfor online (?:reading|use) only\b/gi, "");
   const lines = activitySource
     .replace(/\r\n?/g, "\n")
     .replace(
@@ -697,11 +900,17 @@ export function detectActivities(
     const type = activityType(prompt);
     const options = choiceOptions(prompt);
     const explicitPairs = type === "matching" ? matchingPairs(prompt) : [];
-    const pairs =
+    const columnPairs =
       type === "matching" && explicitPairs.length < 2
         ? matchingPairsFromColumns(activitySource)
         : explicitPairs;
-    const inferredAnswers = inferCorrectAnswers(prompt);
+    const pairs =
+      type === "matching" && columnPairs.length < 2
+        ? matchingPairsFromNumberWords(prompt, activitySource)
+        : columnPairs;
+    const inferredAnswers = inferSequenceAnswers(prompt).length
+      ? inferSequenceAnswers(prompt)
+      : inferCorrectAnswers(prompt);
     const wordAnswers = numberWordCorrectAnswers(prompt);
     return {
       id: `page-${pageNumber}-activity-${index}`,

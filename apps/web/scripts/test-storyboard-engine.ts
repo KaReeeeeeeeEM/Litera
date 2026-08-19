@@ -3,7 +3,7 @@ import {
   createStoryboardPage,
   renderStoryboardHtml,
 } from "../src/lib/device-pipeline/storyboard-engine";
-import { structurePageText } from "../src/lib/device-pipeline/structure-engine";
+import { linkActivityContinuations, structurePageText } from "../src/lib/device-pipeline/structure-engine";
 import {
   completeImageCaptions,
   hydrateStoryboardAssets,
@@ -31,6 +31,34 @@ const completedCaptions = completeImageCaptions(
 assert.equal(completedCaptions.length, 2, "captioning must return one usable caption for every extracted figure");
 assert.equal(completedCaptions[0]?.caption, "Picha ya nyanya tano mezani.");
 assert.match(completedCaptions[1]?.caption ?? "", /^Mchoro /, "missing Swahili captions need a language-matched accessible fallback");
+
+const linkedExercisePages = linkActivityContinuations(
+  [
+    structurePageText(8, "Exercise 1\nIdentify the group with few objects in each row."),
+    structurePageText(9, "Count and read the number of fruits in each group."),
+  ],
+  [
+    { number: 8, text: "Exercise 1 Identify the group with few objects in each row." },
+    {
+      number: 9,
+      text: "Count and read the number of fruits in each group.",
+      layoutBlocks: Array.from({ length: 6 }, (_, index) => ({
+        type: "image" as const,
+        bbox: { x: 40 + index * 20, y: 100, w: 18, h: 18 },
+      })),
+    },
+  ],
+);
+assert.equal(
+  linkedExercisePages[1]?.activities[0]?.continuationFromPage,
+  8,
+  "an exercise continuing on the next physical page must retain its source-page provenance",
+);
+assert.equal(
+  linkedExercisePages[1]?.activities[0]?.responseMode,
+  linkedExercisePages[0]?.activities[0]?.responseMode,
+  "an illustrated continuation must preserve the owning exercise's response contract",
+);
 
 const visualInventory = [
   { id: "page-8-image-1", kind: "image" as const, blob: new Blob(), bounds: { x: 10, y: 20, w: 80, h: 60 } },
@@ -108,6 +136,16 @@ const continuationHtml = createGeometryStoryboardHtml(
   {},
 );
 assert.equal((continuationHtml.match(/<div class="dense-question">/g) ?? []).length, 6, "page-scale panels must not suppress answer slots for numbered prose questions");
+assert.match(
+  continuationHtml,
+  /main\[data-litera-page\]\{[^}]*aspect-ratio:569\/779/,
+  "the printed storyboard must retain the source page dimensions",
+);
+assert.doesNotMatch(
+  continuationHtml,
+  /main\.dense-activity-page\{aspect-ratio:auto!important/,
+  "activity controls must not stretch the printed page now that they open separately",
+);
 
 const horizontalAdditionHtml = createGeometryStoryboardHtml(
   {
@@ -156,6 +194,78 @@ const chapterOpenerHtml = createGeometryStoryboardHtml({
 }, {});
 assert.match(chapterOpenerHtml, /class="chapter-heading"[^>]*background:#/i, "chapter banners must be reconstructed as filled source-style panels");
 assert.match(chapterOpenerHtml, /class="chapter-subtitle"[^>]*border:/i, "chapter subtitles must retain their outlined source hierarchy");
+const illustratedActivityHtml = createGeometryStoryboardHtml({
+  number: 8,
+  width: 569,
+  height: 779,
+  layoutBlocks: [
+    { type: "text", text: "Exercise 1", bbox: { x: 82, y: 110, w: 96, h: 22 }, font: { size: 16 } },
+    { type: "text", text: "Identify the group with few objects in each row.", bbox: { x: 82, y: 137, w: 410, h: 24 }, font: { size: 13 } },
+  ],
+  assets: [
+    { id: "cup-1", kind: "image", blob: new Blob(), bounds: { x: 105, y: 330, w: 38, h: 42 } },
+    { id: "cup-2", kind: "image", blob: new Blob(), bounds: { x: 150, y: 330, w: 38, h: 42 } },
+    { id: "cup-3", kind: "image", blob: new Blob(), bounds: { x: 195, y: 330, w: 38, h: 42 } },
+    { id: "bottle-1", kind: "image", blob: new Blob(), bounds: { x: 330, y: 330, w: 28, h: 48 } },
+    { id: "bottle-2", kind: "image", blob: new Blob(), bounds: { x: 365, y: 330, w: 28, h: 48 } },
+    { id: "bottle-3", kind: "image", blob: new Blob(), bounds: { x: 400, y: 330, w: 28, h: 48 } },
+    { id: "bottle-4", kind: "image", blob: new Blob(), bounds: { x: 435, y: 330, w: 28, h: 48 } },
+  ],
+}, {}, { decoration: { top: "#fff", bottom: "#fff", accent: "#00aaa9" } });
+assert.match(
+  illustratedActivityHtml,
+  /class="activity-panel"[^>]*height:3[0-9]\./,
+  "activity panels must include the illustrated rows below their instruction",
+);
+assert.equal(
+  (illustratedActivityHtml.match(/type="radio"/g) ?? []).length,
+  2,
+  "visual identify-few exercises must expose one selectable answer for each illustrated side",
+);
+assert.match(
+  illustratedActivityHtml,
+  /value="left" data-correct-answer="left"/,
+  "the side with fewer extracted objects must be marked as the correct visual choice",
+);
+const illustratedExamplesHtml = createGeometryStoryboardHtml({
+  number: 7,
+  width: 569,
+  height: 779,
+  layoutBlocks: [
+    { type: "text", text: "Example 1", bbox: { x: 88, y: 310, w: 90, h: 20 }, font: { size: 15 } },
+    { type: "text", text: "Example 2", bbox: { x: 88, y: 510, w: 90, h: 20 }, font: { size: 15 } },
+  ],
+  assets: [
+    { id: "orange-l1", kind: "image", blob: new Blob(), bounds: { x: 120, y: 350, w: 55, h: 55 } },
+    { id: "orange-l2", kind: "image", blob: new Blob(), bounds: { x: 185, y: 350, w: 55, h: 55 } },
+    { id: "orange-r1", kind: "image", blob: new Blob(), bounds: { x: 330, y: 350, w: 55, h: 55 } },
+    { id: "orange-r2", kind: "image", blob: new Blob(), bounds: { x: 395, y: 350, w: 55, h: 55 } },
+    { id: "ball-l1", kind: "image", blob: new Blob(), bounds: { x: 120, y: 550, w: 55, h: 55 } },
+    { id: "ball-l2", kind: "image", blob: new Blob(), bounds: { x: 185, y: 550, w: 55, h: 55 } },
+    { id: "ball-r1", kind: "image", blob: new Blob(), bounds: { x: 330, y: 550, w: 55, h: 55 } },
+    { id: "ball-r2", kind: "image", blob: new Blob(), bounds: { x: 395, y: 550, w: 55, h: 55 } },
+  ],
+}, {}, { decoration: { top: "#fff", bottom: "#fff", accent: "#00aaa9" } });
+assert.equal(
+  (illustratedExamplesHtml.match(/data-example-panel=/g) ?? []).length,
+  1,
+  "consecutive examples on one teaching surface must not become multiple invented boxes",
+);
+assert.match(
+  illustratedExamplesHtml,
+  /class="example-heading"[^>]*color:#00aaa9/i,
+  "example labels must remain visible in the book accent colour",
+);
+assert.equal(
+  (illustratedExamplesHtml.match(/class="activity-grid-cell"/g) ?? []).length,
+  0,
+  "ordinary illustrated rows must not acquire invented card borders",
+);
+assert.equal(
+  (illustratedExamplesHtml.match(/class="source-image-group-card"/g) ?? []).length,
+  4,
+  "paired many/few examples must retain the four printed group cards",
+);
 const tracingHtml = createGeometryStoryboardHtml({
   number: 25,
   width: 569,
@@ -173,6 +283,21 @@ assert.equal(
 );
 assert.match(tracingHtml, /data-trace-target="0"/);
 assert.match(tracingHtml, /data-litera-check-drawing/);
+assert.equal(
+  (tracingHtml.match(/<svg aria-hidden="true" viewBox="0 0 360 420"/g) ?? []).length,
+  5,
+  "every tracing canvas must retain a visible dotted source-style guide",
+);
+assert.match(
+  tracingHtml,
+  /class="[^"]*trace-activity-page/,
+  "tracing pages must retain their activity identity for the separate player",
+);
+assert.doesNotMatch(
+  tracingHtml,
+  /\[data-litera-trace-controls\]\{top:calc\([^)]+ \+ 1cqw\)!important/,
+  "drawing controls must not extend the printed storyboard page",
+);
 assert.match(
   horizontalAdditionHtml,
   /aria-label="Digital page 30"[^>]*>30<\/span>/,
@@ -380,6 +505,32 @@ const syllableSizes = [
 ].map((match) => match[1]);
 assert.equal(new Set(syllableSizes).size, 1, "adjacent syllables in one teaching word must use one coherent font size");
 
+const figureRuleSafetyHtml = createGeometryStoryboardHtml(
+  {
+    number: 26,
+    width: 600,
+    height: 800,
+    layoutBlocks: [
+      { type: "text", text: "Exercise 3", bbox: { x: 60, y: 80, w: 110, h: 22 }, font: { size: 16 } },
+      { type: "image", bbox: { x: 110, y: 301, w: 260, h: 2 } },
+    ],
+    assets: [
+      { id: "fruit-table-cell", kind: "image", blob: new Blob(), bounds: { x: 100, y: 220, w: 280, h: 170 } },
+    ],
+  },
+  { "fruit-table-cell": "blob:fruit" },
+);
+assert.doesNotMatch(
+  figureRuleSafetyHtml,
+  /class="source-rule"[^>]*top:37\.625%/,
+  "vector fragments crossing an extracted figure must not be painted over that image",
+);
+assert.match(
+  figureRuleSafetyHtml,
+  /data-litera-strict-layout>\[data-layout-block\]\{[^}]*overflow:visible!important/,
+  "fit-scaled source text must not lose final letters to a narrow PDF glyph box",
+);
+
 const lightCoverTitleHtml = createGeometryStoryboardHtml(
   {
     number: 1,
@@ -402,6 +553,142 @@ assert.match(
   lightCoverTitleHtml,
   /font-size:[^;]+;font-weight:700[^>]+color:(?!#ffffff)[^;"']+/i,
   "a light-coloured cover title must not disappear merely because a same-size PDF paint fragment overlaps it",
+);
+
+const blackPaintCoverTitleHtml = createGeometryStoryboardHtml(
+  {
+    number: 1,
+    width: 569,
+    height: 779,
+    layoutBlocks: [
+      {
+        type: "text",
+        bbox: { x: 119, y: 79, w: 345, h: 76 },
+        text: "Arithmetic",
+        font: { size: 72, weight: "bold", color: "#000000" },
+      },
+    ],
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#00aaad" } },
+);
+assert.match(
+  blackPaintCoverTitleHtml,
+  /color:#00aaad/i,
+  "cover title paint layers should inherit the sampled publication accent instead of becoming flat black",
+);
+
+const numericTableBlocks = Array.from({ length: 4 }, (_, row) =>
+  Array.from({ length: 5 }, (_, column) => ({
+    type: "text" as const,
+    bbox: { x: 120 + column * 70, y: 410 + row * 38, w: 18, h: 20 },
+    text: String((row + column) % 10),
+    font: { size: 15 },
+  })),
+).flat();
+const semanticTableHtml = createGeometryStoryboardHtml(
+  {
+    number: 25,
+    width: 569,
+    height: 779,
+    layoutBlocks: numericTableBlocks,
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#00aaad" } },
+);
+assert.match(
+  semanticTableHtml,
+  /<table class="source-data-table"/,
+  "regular numeric grids should render as real visible tables",
+);
+assert.equal(
+  (semanticTableHtml.match(/<td /g) ?? []).length,
+  20,
+  "the semantic table must retain every source cell",
+);
+
+const readOnlyFigureTableHtml = createGeometryStoryboardHtml(
+  {
+    number: 13,
+    width: 600,
+    height: 800,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 60, y: 70, w: 390, h: 24 }, text: "Count and read the number of fruits in each group." },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        type: "text" as const,
+        bbox: { x: 440, y: 130 + index * 55, w: 18, h: 22 },
+        text: String(index + 1),
+        font: { size: 18 },
+      })),
+      ...["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"].map((text, index) => ({
+        type: "text" as const,
+        bbox: { x: 470, y: 130 + index * 55, w: 52, h: 22 },
+        text,
+        font: { size: 18 },
+      })),
+    ],
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#00aaad" } },
+);
+assert.doesNotMatch(
+  readOnlyFigureTableHtml,
+  /aria-label="Number response table from the printed page"/,
+  "read-only figure/number/word tables must not be replaced by writable response tables",
+);
+const matchingReferenceTableHtml = createGeometryStoryboardHtml(
+  {
+    number: 14,
+    width: 600,
+    height: 800,
+    layoutBlocks: [
+      { type: "text", bbox: { x: 55, y: 65, w: 430, h: 24 }, text: "Draw a line to match the objects and their number." },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        type: "text" as const,
+        bbox: { x: 455, y: 125 + index * 58, w: 18, h: 22 },
+        text: String(index + 1),
+        font: { size: 18 },
+      })),
+    ],
+  },
+  {},
+  { decoration: { top: "#ffffff", bottom: "#ffffff", accent: "#f5aa18" } },
+);
+assert.doesNotMatch(
+  matchingReferenceTableHtml,
+  /aria-label="Number response table from the printed page"/,
+  "illustrated matching tables must retain their printed layout instead of becoming writing tables",
+);
+
+const imageNumberTableHtml = createGeometryStoryboardHtml(
+  {
+    number: 15,
+    width: 600,
+    height: 800,
+    layoutBlocks: [
+      { type: "text", text: "Exercise 6", bbox: { x: 70, y: 70, w: 110, h: 20 }, font: { size: 16 } },
+      { type: "text", text: "Count each group of fruits and write its number.", bbox: { x: 70, y: 100, w: 390, h: 20 }, font: { size: 14 } },
+      { type: "text", text: "Fruits", bbox: { x: 100, y: 145, w: 80, h: 20 }, font: { size: 14 } },
+      { type: "text", text: "Number", bbox: { x: 455, y: 145, w: 80, h: 20 }, font: { size: 14 } },
+    ],
+    assets: [210, 320, 430, 540].map((y, index) => ({
+      id: "fruit-row-" + index,
+      kind: "image" as const,
+      blob: new Blob(),
+      bounds: { x: 95, y, w: 290, h: 68 },
+    })),
+  },
+  Object.fromEntries([0, 1, 2, 3].map((index) => ["fruit-row-" + index, "blob:fruit-" + index])),
+);
+assert.equal(
+  (imageNumberTableHtml.match(/data-placement-evidence="image-number-table"/g) ?? []).length,
+  4,
+  "each illustrated table row must place one answer inside the printed Number column",
+);
+assert.doesNotMatch(
+  imageNumberTableHtml,
+  /data-placement-evidence="repeated-printed-answer-box"/,
+  "fruit pictures in a counting table must never be mistaken for answer-box artwork",
 );
 
 const wrappedInstructionHtml = createGeometryStoryboardHtml(
@@ -453,8 +740,30 @@ const narrowNumberHtml = createGeometryStoryboardHtml(
 assert.match(narrowNumberHtml, /data-numeric-layout="true"/);
 assert.match(
   narrowNumberHtml,
-  /data-numeric-layout="true"[^>]*overflow:hidden/,
-  "long numbers must be fitted and clipped to their measured source box instead of overflowing adjacent columns",
+  /data-numeric-layout="true"[^>]*font-weight:700/,
+  "primary-school numbers must retain a strong readable weight after fitting",
+);
+
+const sassoonFontHtml = createGeometryStoryboardHtml(
+  {
+    number: 7,
+    width: 600,
+    height: 800,
+    layoutBlocks: [
+      {
+        type: "text",
+        bbox: { x: 70, y: 90, w: 360, h: 28 },
+        text: "Comparing number of objects",
+        font: { family: "RLNZFK+SassoonPrimary-Bold", size: 18, weight: "bold" },
+      },
+    ],
+  },
+  {},
+);
+assert.match(
+  sassoonFontHtml,
+  /font-family:'Sassoon Primary','SassoonPrimary','Comic Sans MS','Andika',cursive/,
+  "Sassoon source text must use a primary-school handwriting family stack",
 );
 
 const equationGridHtml = createGeometryStoryboardHtml(

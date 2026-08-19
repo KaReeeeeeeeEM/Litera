@@ -9,9 +9,17 @@ export function prepareTextForSpeech(text: string, language?: string) {
     )
     .replace(/\s+/g, " ")
     .trim();
+  // PDFs frequently contain the same visible title on three coincident text
+  // layers. It must remain visible once, and it must never be narrated three
+  // times. Requiring at least three adjacent copies protects intentional
+  // doubles such as "bye bye".
+  const deduplicated = cleaned.replace(
+    /\b([\p{L}\p{N}][\p{L}\p{N}'’.-]*)(?:\s+\1){2,}\b/giu,
+    "$1",
+  );
   return language?.toLowerCase().startsWith("sw")
-    ? localizeSwahiliNumbers(cleaned)
-    : cleaned;
+    ? localizeSwahiliNumbers(deduplicated)
+    : deduplicated;
 }
 
 export async function synthesizeCatalogEntry({ entry, language, provider, keys, voice, speed, instructions, signal }: { entry: TextCatalogEntry; language: string; provider: ProviderId; keys: ProviderKeys; voice: string; speed: number; instructions?: string; signal?: AbortSignal }): Promise<SpeechEntry> {
@@ -32,6 +40,12 @@ export async function synthesizeCatalogEntry({ entry, language, provider, keys, 
     const pcm = Uint8Array.from(atob(inline.data), character => character.charCodeAt(0));
     audio = inline.mimeType?.includes("wav") ? new Blob([pcm], { type: "audio/wav" }) : pcmToWav(pcm, 24_000);
   } else throw new Error("Speech requires an unlocked OpenAI or Gemini key.");
+  // Network response Blobs may be backed by a temporary file in Chromium and
+  // desktop WebViews. Once the response/transcription lifecycle ends that
+  // backing file can disappear, causing IndexedDB to reject an otherwise valid
+  // speech checkpoint with `InvalidBlob`. Materialize owned bytes before the
+  // Blob is aligned or persisted so every narration asset is durable.
+  audio = await durableAudioBlob(audio);
   let durationMs = estimateDuration(text, speed);
   let words = estimateWordTimestamps(text, durationMs);
   if (keys.openai) {
@@ -46,7 +60,15 @@ export async function synthesizeCatalogEntry({ entry, language, provider, keys, 
       // duration-scaled estimate remains available as an explicit fallback.
     }
   }
-  return { id: `${language}:${entry.id}`, textId: entry.id, language, pageNumber: entry.pageNumber, inputText: text, voice, speed, audio, durationMs, words };
+  return { id: `${language}:${entry.id}`, textId: entry.id, language, pageNumber: entry.pageNumber, inputText: text, voice, speed, audio, audioBytes: await audio.arrayBuffer(), durationMs, words };
+}
+
+async function durableAudioBlob(audio: Blob) {
+  if (!(audio instanceof Blob) || audio.size === 0)
+    throw new Error("The speech provider returned an empty audio asset.");
+  return new Blob([await audio.arrayBuffer()], {
+    type: audio.type || "audio/mpeg",
+  });
 }
 
 function estimateDuration(text: string, speed: number) { return Math.max(500, Math.round(text.split(/\s+/).length / (2.6 * speed) * 1000)); }
@@ -171,12 +193,28 @@ function swahiliDigit(value: number) {
   return ["sifuri", "moja", "mbili", "tatu", "nne", "tano", "sita", "saba", "nane", "tisa"][value]!;
 }
 async function providerFetch(input: string, init: RequestInit) {
-  const timeout = AbortSignal.timeout(60_000);
-  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-  const request = { ...init, signal };
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
-    ? (await import("@tauri-apps/plugin-http")).fetch(input, request)
-    : fetch(input, request);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const timeout = AbortSignal.timeout(60_000);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    const request = { ...init, signal };
+    try {
+      const response = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+        ? await (await import("@tauri-apps/plugin-http")).fetch(input, request)
+        : await fetch(input, request);
+      if (![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === 2)
+        return response;
+    } catch (error) {
+      if (init.signal?.aborted || attempt === 2) throw error;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(resolve, 1_200 * (attempt + 1));
+      init.signal?.addEventListener("abort", () => {
+        window.clearTimeout(timer);
+        reject(init.signal?.reason);
+      }, { once: true });
+    });
+  }
+  throw new Error("The speech provider did not respond after several attempts.");
 }
 async function safeProviderError(response: Response) { try { const body = await response.json() as { error?: { message?: string } }; return body.error?.message; } catch { return undefined; } }
 function pcmToWav(pcm: Uint8Array, sampleRate: number) { const buffer = new ArrayBuffer(44 + pcm.byteLength); const view = new DataView(buffer); const write = (offset: number, value: string) => [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0))); write(0, "RIFF"); view.setUint32(4, 36 + pcm.byteLength, true); write(8, "WAVEfmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, pcm.byteLength, true); new Uint8Array(buffer, 44).set(pcm); return new Blob([buffer], { type: "audio/wav" }); }

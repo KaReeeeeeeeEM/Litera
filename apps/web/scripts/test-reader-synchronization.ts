@@ -57,5 +57,10 @@ assert.deepEqual(
   [0, 1],
   "a provider pronunciation of the copyright sign must still highlight the symbol",
 );
+assert.deepEqual(
+  alignSpeechToRenderedWords(["apple", "missing", "orange"], ["apple", "orange"]),
+  [0, -1, 1],
+  "an unmatched spoken word must not be forced onto a visible word or image",
+);
 
 console.log("Reader synchronization regression tests passed.");

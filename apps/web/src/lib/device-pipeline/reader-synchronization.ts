@@ -20,13 +20,18 @@ export function alignSpeechToRenderedWords(spoken: string[], rendered: string[])
   for (const word of spoken) {
     const spokenToken = normalizeToken(word);
     let match = -1;
-    for (let index = renderedCursor; index < Math.min(rendered.length, renderedCursor + 5); index += 1) {
+    if (!spokenToken) {
+      output.push(-1);
+      continue;
+    }
+    for (let index = renderedCursor; index < Math.min(rendered.length, renderedCursor + 12); index += 1) {
       if (normalizeToken(rendered[index] ?? "") === spokenToken) {
         match = index;
         break;
       }
     }
-    if (match < 0 && renderedCursor < rendered.length) match = renderedCursor;
+    // Never force an unmatched spoken token onto the next visible word. A
+    // missing highlight is safer than a confident but misleading highlight.
     output.push(match);
     if (match >= 0) renderedCursor = match + 1;
   }

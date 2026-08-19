@@ -182,16 +182,27 @@ export function ImageEditorDialog({
 function isMeaningfulEditableAsset(asset: BookImageAsset) {
   if (asset.containsText) return false;
   const { w, h } = asset.bounds;
-  if (w < 32 || h < 32) return false;
+  if (w < 8 || h < 8) return false;
   const ratio = w / Math.max(1, h);
-  return ratio >= 0.2 && ratio <= 5 && w * h >= 2_500;
+  return ratio >= 0.2 && ratio <= 5 && w * h >= 180;
 }
 
 function useAssetUrls(assets: BookImageAsset[]) {
   const urls = useMemo(
     () =>
       Object.fromEntries(
-        assets.map((asset) => [asset.id, URL.createObjectURL(asset.blob)]),
+        assets.map((asset) => {
+          // Older persisted conversions may restore the Blob shell without
+          // its payload while retaining the canonical bytes. Rehydrate here
+          // so the replacement library never displays broken thumbnails.
+          const source =
+            asset.blob instanceof Blob && asset.blob.size > 0
+              ? asset.blob
+              : asset.bytes
+                ? new Blob([asset.bytes], { type: "image/png" })
+                : asset.blob;
+          return [asset.id, URL.createObjectURL(source)];
+        }),
       ),
     [assets],
   );

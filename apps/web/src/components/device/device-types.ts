@@ -81,6 +81,9 @@ export type StructuredActivity = {
   correctAnswers?: string[];
   matchingPairs?: Array<{ left: string; right: string }>;
   noInputReason?: string;
+  /** Stable link to the activity that began on an earlier physical page. */
+  continuationOf?: string;
+  continuationFromPage?: number;
   sourceBounds?: { x: number; y: number; w: number; h: number };
 };
 
@@ -95,6 +98,7 @@ export type StructuredPage = {
 
 export type ExtractedLayoutBlock = {
   type: "text" | "image";
+  shape?: "ellipse" | "star";
   bbox: { x: number; y: number; w: number; h: number };
   text?: string;
   font?: {
@@ -224,6 +228,9 @@ export type SpeechEntry = {
   voice?: string;
   speed?: number;
   audio: Blob;
+  /** Durable audio bytes. Persist bytes rather than native Blob handles because
+   * desktop WebViews can invalidate file-backed Blobs between checkpoints. */
+  audioBytes?: ArrayBuffer;
   durationMs?: number;
   words: Array<{ word: string; startMs: number; endMs: number }>;
 };
@@ -322,7 +329,7 @@ export type DeviceBook = {
   storyboardCss?: string;
   sourceTextCatalog?: TextCatalogEntry[];
   easyReadCatalog?: TextCatalogEntry[];
-  /** Shared audience level for Easy Read text and generated visual captions. */
+  /** Shared audience level for generated visual captions and their Easy Read alternatives. */
   readingLevel?: ReadingLevel;
   languageCatalogs?: Record<string, LanguageCatalog>;
   speechEntries?: SpeechEntry[];
@@ -504,4 +511,33 @@ export function stageProgressValue(book: DeviceBook, stage: StageSlug) {
       ? 100
       : 0;
   return book.stageProgress?.[stage] ?? 0;
+}
+
+const stagePrerequisites: Partial<Record<StageSlug, StageSlug>> = {
+  structure: "extract",
+  storyboard: "structure",
+  "image-captioning": "storyboard",
+  "easy-read": "image-captioning",
+  language: "easy-read",
+  speech: "language",
+  "sign-language": "language",
+  validate: "speech",
+  preview: "storyboard",
+  export: "validate",
+  publish: "validate",
+};
+
+/** The nearest incomplete predecessor in the stage's full dependency chain. */
+export function incompleteStagePrerequisite(
+  book: DeviceBook,
+  stage: StageSlug,
+): StageSlug | undefined {
+  let prerequisite = stagePrerequisites[stage];
+  const visited = new Set<StageSlug>();
+  while (prerequisite && !visited.has(prerequisite)) {
+    visited.add(prerequisite);
+    if (stageProgressValue(book, prerequisite) < 100) return prerequisite;
+    prerequisite = stagePrerequisites[prerequisite];
+  }
+  return undefined;
 }

@@ -303,6 +303,18 @@ html[data-motion-ready="true"] [data-reveal][data-visible="true"] {
   .page-transition, .page-transition[data-exiting="true"], .studio-enter { animation-duration: 1ms; }
 }
 
+button[aria-label="Play narration"],
+button[aria-label="Pause narration"] {
+  background: #fff !important;
+  color: #000 !important;
+}
+
+button[aria-label="Play narration"] svg,
+button[aria-label="Pause narration"] svg {
+  fill: #000;
+  color: #000;
+}
+
 @keyframes marquee {
   to { transform: translateX(-50%); }
 }

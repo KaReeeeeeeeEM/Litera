@@ -23,6 +23,7 @@ const deduplicatedCatalog = buildTextCatalog({
       { id: "arithmetic-late", kind: "heading", content: "Arithmetic", order: 2, sourceBounds: { x: 50, y: 100, w: 160, h: 30 } },
       { id: "subtitle", kind: "text", content: "Pupil’s Book", order: 3, sourceBounds: { x: 50, y: 150, w: 140, h: 20 } },
       { id: "arithmetic-duplicate", kind: "heading", content: "Arithmetic", order: 0, sourceBounds: { x: 50, y: 100, w: 160, h: 30 } },
+      { id: "arithmetic-shadow", kind: "heading", content: "Arithmetic", order: 1, sourceBounds: { x: 51, y: 102, w: 160, h: 30 } },
     ],
   }],
 } as unknown as Parameters<typeof buildTextCatalog>[0]);

@@ -15,7 +15,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   DeviceBook,
   ExtractedPageAsset,
@@ -72,6 +72,156 @@ type Props = {
   providerKeys?: ProviderKeys;
 };
 type Viewport = "desktop" | "tablet" | "mobile";
+const imagePerceptualKeyCache = new Map<string, Promise<string>>();
+
+/**
+ * The PDF extractor can expose the same embedded bitmap through several page
+ * paint operations. Keep one reusable library entry for identical bytes while
+ * retaining genuinely different crops and illustrations.
+ */
+export function deduplicateBookImageAssets(assets: BookImageAsset[]) {
+  const seen = new Set<string>();
+  return assets.filter((asset) => {
+    if (!asset.bytes) return true;
+    const bytes = new Uint8Array(asset.bytes);
+    let sample = 2166136261;
+    const stride = Math.max(1, Math.floor(bytes.length / 96));
+    for (let index = 0; index < bytes.length; index += stride) {
+      sample ^= bytes[index] ?? 0;
+      sample = Math.imul(sample, 16777619);
+    }
+    const key = `${asset.blob.type}:${bytes.length}:${sample >>> 0}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function useDeduplicatedBookImageAssets(
+  assets: BookImageAsset[],
+  currentPageNumber?: number,
+) {
+  const exact = useMemo(() => {
+    const ordered = currentPageNumber
+      ? [
+          ...assets.filter((asset) => asset.pageNumber === currentPageNumber),
+          ...assets.filter((asset) => asset.pageNumber !== currentPageNumber),
+        ]
+      : assets;
+    return deduplicateBookImageAssets(ordered);
+  }, [assets, currentPageNumber]);
+  const [result, setResult] = useState(exact);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const seen: string[] = [];
+      const next: BookImageAsset[] = [];
+      for (let index = 0; index < exact.length; index += 1) {
+        const asset = exact[index]!;
+        const key = await cachedPerceptualImageKey(asset).catch(
+          () => `asset:${asset.id}`,
+        );
+        if (!seen.some((candidate) => perceptualKeysMatch(candidate, key))) {
+          seen.push(key);
+          next.push(asset);
+        }
+        // Hash a library incrementally so opening Storyboard never stalls on
+        // image-heavy books.
+        if (index > 0 && index % 12 === 0)
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      if (!cancelled) setResult(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [exact]);
+  return result;
+}
+
+function cachedPerceptualImageKey(asset: BookImageAsset) {
+  const cacheKey = `${asset.id}:${asset.bytes?.byteLength ?? asset.blob.size}`;
+  const saved = imagePerceptualKeyCache.get(cacheKey);
+  if (saved) return saved;
+  const pending = perceptualImageKey(asset);
+  imagePerceptualKeyCache.set(cacheKey, pending);
+  return pending;
+}
+
+function perceptualKeysMatch(left: string, right: string) {
+  if (left.startsWith("asset:") || right.startsWith("asset:"))
+    return left === right;
+  const [leftAspect, leftColor, leftBits] = left.split(":");
+  const [rightAspect, rightColor, rightBits] = right.split(":");
+  if (!leftBits || !rightBits || !leftColor || !rightColor) return left === right;
+  if (Math.abs(Number(leftAspect) - Number(rightAspect)) > 1) return false;
+  const leftChannels = leftColor.split("-").map(Number);
+  const rightChannels = rightColor.split("-").map(Number);
+  if (
+    leftChannels.some(
+      (channel, index) => Math.abs(channel - (rightChannels[index] ?? 0)) > 3,
+    )
+  )
+    return false;
+  let changed = 0;
+  for (let index = 0; index < leftBits.length; index += 1) {
+    const difference =
+      Number.parseInt(leftBits[index] ?? "0", 16) ^
+      Number.parseInt(rightBits[index] ?? "0", 16);
+    changed += [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4][
+      difference
+    ]!;
+    if (changed > 24) return false;
+  }
+  return true;
+}
+
+async function perceptualImageKey(asset: BookImageAsset) {
+  const source =
+    asset.blob instanceof Blob && asset.blob.size > 0
+      ? asset.blob
+      : asset.bytes
+        ? new Blob([asset.bytes], { type: "image/png" })
+        : asset.blob;
+  const bitmap = await createImageBitmap(source);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 12;
+    canvas.height = 12;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return `asset:${asset.id}`;
+    context.drawImage(bitmap, 0, 0, 12, 12);
+    const pixels = context.getImageData(0, 0, 12, 12).data;
+    const luminance: number[] = [];
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const r = pixels[offset] ?? 255;
+      const g = pixels[offset + 1] ?? 255;
+      const b = pixels[offset + 2] ?? 255;
+      luminance.push(Math.round(r * 0.299 + g * 0.587 + b * 0.114));
+      red += r;
+      green += g;
+      blue += b;
+    }
+    const mean = luminance.reduce((sum, value) => sum + value, 0) / luminance.length;
+    const bits = luminance
+      .map((value) => (value >= mean ? "1" : "0"))
+      .join("")
+      .match(/.{1,4}/g)!
+      .map((chunk) => Number.parseInt(chunk, 2).toString(16))
+      .join("");
+    const count = luminance.length;
+    const color = [red, green, blue]
+      .map((total) => Math.round(total / count / 16))
+      .join("-");
+    const aspect = Math.round((bitmap.width / Math.max(1, bitmap.height)) * 10);
+    return `${aspect}:${color}:${bits}`;
+  } finally {
+    bitmap.close();
+  }
+}
 
 export function StoryboardWorkspace({
   book,
@@ -114,12 +264,19 @@ export function StoryboardWorkspace({
   const rerendering =
     locallyRerendering ||
     Boolean(page && rerenderingPages.includes(page.pageNumber));
-  const bookImageAssets: BookImageAsset[] = (book.extractedPages ?? []).flatMap(
-    (sourcePage) =>
-      (sourcePage.assets ?? []).map((asset) => ({
-        ...asset,
-        pageNumber: sourcePage.number,
-      })),
+  const allBookImageAssets = useMemo(
+    () =>
+      (book.extractedPages ?? []).flatMap((sourcePage) =>
+        (sourcePage.assets ?? []).map((asset) => ({
+          ...asset,
+          pageNumber: sourcePage.number,
+        })),
+      ),
+    [book.extractedPages],
+  );
+  const bookImageAssets = useDeduplicatedBookImageAssets(
+    allBookImageAssets,
+    page?.pageNumber,
   );
 
   async function applyImageEdit(

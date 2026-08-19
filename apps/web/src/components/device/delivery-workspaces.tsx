@@ -464,17 +464,20 @@ export function ValidationWorkspace({
   onSelectStage,
 }: {
   book: DeviceBook;
-  onResolve: () => Promise<void>;
+  onResolve: (onProgress?: (completed: number, total: number, pageNumber?: number) => void) => Promise<void>;
   onSelectStage: (stage: "export" | "publish") => Promise<void>;
 }) {
   const report = book.validationReport;
   const [resolving, setResolving] = useState(false);
+  const [resolveProgress, setResolveProgress] = useState<{ completed: number; total: number; pageNumber?: number }>();
   async function resolve() {
     setResolving(true);
+    setResolveProgress({ completed: 0, total: Math.max(1, report?.issues.length ?? 1) });
     try {
-      await onResolve();
+      await onResolve((completed, total, pageNumber) => setResolveProgress({ completed, total, pageNumber }));
     } finally {
       setResolving(false);
+      setResolveProgress(undefined);
     }
   }
   return (
@@ -522,10 +525,13 @@ export function ValidationWorkspace({
               </p>
             ) : null}
             {report.issues.length ? (
-              <Button className="mt-5" disabled={resolving} onClick={() => void resolve()}>
-                {resolving ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                Resolve by AI
-              </Button>
+              <div className="mt-5 grid gap-2">
+                <Button className="w-fit" disabled={resolving} onClick={() => void resolve()}>
+                  {resolving ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {resolving ? "Resolving accessibility issues" : "Resolve by AI"}
+                </Button>
+                {resolving && resolveProgress ? <div aria-live="polite" className="max-w-md text-sm text-muted-foreground"><p>{resolveProgress.pageNumber ? `Repairing page ${resolveProgress.pageNumber}` : "Preparing repairs"} · {resolveProgress.completed} of {resolveProgress.total}</p><div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${Math.round((resolveProgress.completed / Math.max(1, resolveProgress.total)) * 100)}%` }} /></div></div> : null}
+              </div>
             ) : null}
             {report.passed ? (
               <div className="mt-6 flex flex-wrap gap-3 rounded-xl border bg-muted/30 p-4">
@@ -562,6 +568,11 @@ export function ExportWorkspace({ book }: { book: DeviceBook }) {
     book.exportArtifact?.format ?? "litera-web",
   );
   const [preparing, setPreparing] = useState(false);
+  const [prepared, setPrepared] = useState<{ url: string; name: string }>();
+
+  useEffect(() => () => {
+    if (prepared?.url) URL.revokeObjectURL(prepared.url);
+  }, [prepared?.url]);
 
   async function download() {
     setPreparing(true);
@@ -570,12 +581,13 @@ export function ExportWorkspace({ book }: { book: DeviceBook }) {
         book.exportArtifact?.format === selected
           ? book.exportArtifact
           : await packageBook(book, selected);
-      const url = URL.createObjectURL(artifact.blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = artifact.name;
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setPrepared((current) => {
+        if (current?.url) URL.revokeObjectURL(current.url);
+        return { url: URL.createObjectURL(artifact.blob), name: artifact.name };
+      });
+      toast.complete("The export package is ready to download.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The export package could not be prepared.");
     } finally {
       setPreparing(false);
     }
@@ -633,17 +645,26 @@ export function ExportWorkspace({ book }: { book: DeviceBook }) {
               languages
             </p>
           </div>
-          <Button
-            disabled={preparing || !book.storyboardPages?.length}
-            onClick={() => void download()}
-          >
-            {preparing ? (
-              <LoaderCircle className="animate-spin" data-icon="inline-start" />
-            ) : (
-              <Download data-icon="inline-start" />
-            )}
-            {preparing ? "Preparing…" : "Prepare and download"}
-          </Button>
+          {prepared ? (
+            <Button asChild>
+              <a download={prepared.name} href={prepared.url}>
+                <Download data-icon="inline-start" />
+                Download prepared package
+              </a>
+            </Button>
+          ) : (
+            <Button
+              disabled={preparing || !book.storyboardPages?.length}
+              onClick={() => void download()}
+            >
+              {preparing ? (
+                <LoaderCircle className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <Download data-icon="inline-start" />
+              )}
+              {preparing ? "Preparing…" : "Prepare package"}
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

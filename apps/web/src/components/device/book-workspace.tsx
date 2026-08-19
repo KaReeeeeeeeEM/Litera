@@ -34,6 +34,7 @@ import type {
 import {
   projectProgress,
   stageProgressValue,
+  incompleteStagePrerequisite,
   stageTasks,
   stages,
 } from "@/components/device/device-types";
@@ -106,6 +107,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/feedback";
 import {
   detectActivities,
+  linkActivityContinuations,
   structurePageText,
 } from "@/lib/device-pipeline/structure-engine";
 import {
@@ -209,8 +211,10 @@ export function BookWorkspace({
     runningStage === "storyboard" ||
     rerenderingPages.length > 0;
   async function selectStage(stage: StageSlug) {
-    if (stage === "preview" && stageProgressValue(book, "preview") < 100) {
-      toast.warning("Complete Storyboard before opening Preview.");
+    const prerequisite = incompleteStagePrerequisite(book, stage);
+    if (prerequisite) {
+      const label = stages.find((item) => item.slug === prerequisite)?.label;
+      toast.warning(`Complete ${label ?? "the previous stage"} before opening this stage.`);
       return;
     }
     if (
@@ -241,8 +245,9 @@ export function BookWorkspace({
           <nav className="grid gap-1 pr-2">
             {stages.map((stage, index) => {
               const progress = stageProgressValue(book, stage.slug);
+              const prerequisite = incompleteStagePrerequisite(book, stage.slug);
               const disabled =
-                (stage.slug === "preview" && progress < 100) ||
+                Boolean(prerequisite) ||
                 ((stage.slug === "export" || stage.slug === "publish") &&
                   !book.validationReport?.passed);
               const isRunning = runningStage === stage.slug;
@@ -256,6 +261,11 @@ export function BookWorkspace({
                   )}
                   key={stage.slug}
                   aria-disabled={disabled}
+                  aria-label={
+                    prerequisite
+                      ? `${stage.label}, locked until ${stages.find((item) => item.slug === prerequisite)?.label} is complete`
+                      : stage.label
+                  }
                   disabled={disabled}
                   onClick={() => void selectStage(stage.slug)}
                   type="button"
@@ -283,7 +293,11 @@ export function BookWorkspace({
                       {stage.label}
                     </span>
                     <span className="block text-[11px] text-muted-foreground">
-                      {isRunning ? `Running · ${progress}%` : `${progress}%`}
+                      {isRunning
+                        ? `Running · ${progress}%`
+                        : prerequisite
+                          ? `Complete ${stages.find((item) => item.slug === prerequisite)?.label}`
+                          : `${progress}%`}
                     </span>
                   </span>
                 </button>
@@ -528,18 +542,31 @@ function StagePage({
   onChange: Props["onChange"];
 }) {
   const stage = stages.find((item) => item.slug === active)!;
-  const [processing, setProcessing] = useState(false);
+  const [processingStage, setProcessingStage] = useState<StageSlug>();
   const cancelled = useRef(false);
   const runController = useRef<AbortController | undefined>(undefined);
-  const running = processing;
+  const running = processingStage === active;
+  const anotherStageRunning = Boolean(processingStage && !running);
   const progress =
     active === "extract"
       ? extractionProgress(book)
       : stageProgressValue(book, active);
-  const prerequisiteBlocked =
-    active === "speech" && (book.stageProgress?.language ?? 0) < 100;
+  const prerequisite = incompleteStagePrerequisite(book, active);
+  const prerequisiteBlocked = Boolean(prerequisite);
   async function run() {
     if (active === "preview") return;
+    if (anotherStageRunning) {
+      toast.warning(
+        `${stages.find((item) => item.slug === processingStage)?.label ?? "Another stage"} is already running.`,
+      );
+      return;
+    }
+    if (prerequisite) {
+      toast.warning(
+        `Complete ${stages.find((item) => item.slug === prerequisite)?.label ?? "the previous stage"} first.`,
+      );
+      return;
+    }
     if (
       !providerConfigured &&
       active !== "extract" &&
@@ -563,7 +590,7 @@ function StagePage({
       }
       cancelled.current = false;
       runController.current = new AbortController();
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         const repeatAll = book.conversionConfig?.rangeRunMode === "all";
         let existingStructured = repeatAll
@@ -609,12 +636,12 @@ function StagePage({
             page.text ?? "",
             page.layoutBlocks,
           );
-          const structuredPages = [
+          const structuredPages = linkActivityContinuations([
             ...(working.structuredPages ?? []).filter(
               (candidate) => candidate.pageNumber !== structuredPage.pageNumber,
             ),
             structuredPage,
-          ].sort((a, b) => a.pageNumber - b.pageNumber);
+          ].sort((a, b) => a.pageNumber - b.pageNumber), extractedPages);
           const structureProgress = Math.round(
             (structuredPages.length / extractedPages.length) * 100,
           );
@@ -634,8 +661,13 @@ function StagePage({
             ),
           );
         }
+        const linkedStructuredPages = linkActivityContinuations(
+          working.structuredPages ?? [],
+          extractedPages,
+        );
         working = {
           ...working,
+          structuredPages: linkedStructuredPages,
           pipelineSteps: completePipelineSteps(
             working.pipelineSteps,
             ["page-sectioning", "translation"],
@@ -661,7 +693,7 @@ function StagePage({
           error instanceof Error ? error.message : "Page structure failed.",
         );
       } finally {
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -676,7 +708,7 @@ function StagePage({
       cancelled.current = false;
       const controller = new AbortController();
       runController.current = controller;
-      setProcessing(true);
+      setProcessingStage(active);
       let working = book;
       try {
         const repeatAll = book.conversionConfig?.rangeRunMode === "all";
@@ -761,6 +793,21 @@ function StagePage({
             async (sourcePage) => {
               let storyboardPage: Awaited<ReturnType<typeof renderStoryboardSourcePage>>;
               try {
+                // A fixed 18s budget was tight enough that an asset-heavy page
+                // (dozens of images needing blob-URL conversion and layout
+                // work) could exceed it under batch load - even though the
+                // very same render finishes fine in isolation (the
+                // single-page repair flow below already budgets 30s with no
+                // competing pages). Once this timed out, the catch below
+                // silently recovered with assets stripped entirely, so the
+                // page kept its text but lost every picture with no visible
+                // error anywhere. Scale the budget with how much this
+                // specific page actually has to render instead of using one
+                // size for every page.
+                const pageTimeoutMs = Math.min(
+                  90_000,
+                  30_000 + (sourcePage.activities.length + (book.extractedPages?.find((p) => p.number === sourcePage.pageNumber)?.assets?.length ?? 0)) * 500,
+                );
                 storyboardPage = await withStoryboardPageTimeout(
                   renderStoryboardSourcePage({
                     book,
@@ -772,7 +819,7 @@ function StagePage({
                     visionProvider,
                     signal: controller.signal,
                   }),
-                  18_000,
+                  pageTimeoutMs,
                   controller.signal,
                 );
               } catch (error) {
@@ -798,6 +845,17 @@ function StagePage({
                   },
                 );
                 storyboardPage = { ...recoveredPage, digitalPageNumber };
+                // This recovery path strips every image on the page as a
+                // safe fallback so the whole batch can keep going - but that
+                // previously happened with no visible trace anywhere, so a
+                // genuinely slow-but-otherwise-fine page (usually one with
+                // many images) silently lost every picture with only a
+                // "Rendered" status to look at. Surface it so this is
+                // something to notice and re-render, not a permanent,
+                // invisible gap.
+                toast.warning(
+                  `Page ${sourcePage.pageNumber} kept its text but lost its images while rendering (${error instanceof Error ? error.message : "an error occurred"}). Use "Re-render page" on it once the batch finishes.`,
+                );
               }
               controller.signal.throwIfAborted();
               persistChain = persistChain.then(async () => {
@@ -904,7 +962,7 @@ function StagePage({
       } finally {
         if (runController.current === controller)
           runController.current = undefined;
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -920,7 +978,7 @@ function StagePage({
       cancelled.current = false;
       const controller = new AbortController();
       runController.current = controller;
-      setProcessing(true);
+      setProcessingStage(active);
       let working = book;
       try {
         const allPages = book.storyboardPages;
@@ -1107,7 +1165,7 @@ function StagePage({
         );
       } finally {
         if (runController.current === controller) runController.current = undefined;
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1118,7 +1176,7 @@ function StagePage({
       }
       const controller = new AbortController();
       runController.current = controller;
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         let working: DeviceBook = {
           ...book,
@@ -1135,10 +1193,21 @@ function StagePage({
           },
         };
         await onChange(working, "Started Easy Read");
-        const sourceTextCatalog = buildTextCatalog(working);
+        const captionCatalog = (working.imageCaptions ?? []).flatMap((caption) => {
+          const text = caption.caption.replace(/\s+/g, " ").trim();
+          return text
+            ? [{ id: `caption-${caption.imageId}`, text, pageNumber: caption.pageNumber }]
+            : [];
+        });
+        if (!captionCatalog.length) {
+          toast.error("Run Captioning before Easy Read so image descriptions can be simplified.");
+          return;
+        }
+        const readingLevel = book.readingLevel ?? "middle";
+        let easyReadCatalog = buildEasyReadCatalog(captionCatalog, readingLevel);
         working = {
           ...working,
-          sourceTextCatalog,
+          easyReadCatalog,
           stageProgress: { ...working.stageProgress, "easy-read": 50 },
           pipelineSteps: runPipelineStep(
             completePipelineSteps(
@@ -1151,24 +1220,36 @@ function StagePage({
           ),
         };
         await onChange(working, "Built Easy Read source catalog");
-        const readingLevel = book.readingLevel ?? "middle";
         const language =
           book.conversionConfig?.editingLanguage &&
           book.conversionConfig.editingLanguage !== "auto"
             ? book.conversionConfig.editingLanguage
             : (book.metadata?.languageCode ?? "en");
-        let easyReadCatalog = buildEasyReadCatalog(sourceTextCatalog, readingLevel);
         if (providerKeys) {
           try {
             const provider = selectTranslationProvider(providerKeys);
             easyReadCatalog = await withProviderRetry(
               () => adaptCatalogForReadingLevel({
-                entries: sourceTextCatalog,
+                entries: captionCatalog,
                 language,
                 level: readingLevel,
                 keys: providerKeys,
                 provider,
                 signal: controller.signal,
+                onProgress: async (completed, total) => {
+                  const progress = 50 + Math.round((completed / Math.max(1, total)) * 48);
+                  working = {
+                    ...working,
+                    stageProgress: {
+                      ...working.stageProgress,
+                      "easy-read": progress,
+                    },
+                  };
+                  await onChange(
+                    working,
+                    `Easy Read adapted ${completed} of ${total} unique passages`,
+                  );
+                },
               }),
               controller.signal,
             );
@@ -1191,13 +1272,13 @@ function StagePage({
           pipelineRun: { ...working.pipelineRun!, status: "complete" },
         };
         await onChange(working, "Completed Easy Read");
-        toast.complete("The Easy Read alternative is ready for review.");
+        toast.complete("Easy Read image captions are ready for review.");
       } catch (error) {
         if (!isAbortError(error))
           toast.error(error instanceof Error ? error.message : "Easy Read failed.");
       } finally {
         if (runController.current === controller) runController.current = undefined;
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1233,7 +1314,7 @@ function StagePage({
       cancelled.current = false;
       const controller = new AbortController();
       runController.current = controller;
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         const provider = targets.length
           ? selectTranslationProvider(providerKeys!)
@@ -1323,7 +1404,7 @@ function StagePage({
       } finally {
         if (runController.current === controller)
           runController.current = undefined;
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1374,7 +1455,7 @@ function StagePage({
       const controller = new AbortController();
       cancelled.current = false;
       runController.current = controller;
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         const sourceReadingOrder = new Map(
           buildTextCatalog(book).map((entry, entryIndex) => [entry.id, entryIndex]),
@@ -1404,13 +1485,38 @@ function StagePage({
             prepareTextForSpeech(entry.text, catalog.language),
           ]),
         );
-        const persistedSpeech = (book.speechEntries ?? []).filter(
+        const persistedSpeechCandidates = (book.speechEntries ?? []).filter(
           (entry) =>
             catalogEntryIds.has(entry.id) &&
             entry.inputText === catalogSpeechInputs.get(entry.id) &&
             entry.voice === requestedVoice &&
             entry.speed === requestedSpeed,
         );
+        // Verify restored audio before carrying it into the next IndexedDB
+        // checkpoint. Chromium can restore a Blob whose temporary native
+        // backing file has expired; attempting to save that handle again aborts
+        // the whole book write with InvalidBlob. Valid clips are materialized
+        // into owned bytes and only broken clips are regenerated.
+        const persistedSpeech = (
+          await Promise.all(
+            persistedSpeechCandidates.map(async (entry) => {
+              try {
+                if (!(entry.audio instanceof Blob) || entry.audio.size === 0)
+                  return undefined;
+                const bytes = entry.audioBytes ?? await entry.audio.arrayBuffer();
+                return {
+                  ...entry,
+                  audio: new Blob([bytes], {
+                    type: entry.audio.type || "audio/mpeg",
+                  }),
+                  audioBytes: bytes,
+                };
+              } catch {
+                return undefined;
+              }
+            }),
+          )
+        ).filter(Boolean) as SpeechEntry[];
         const speechKeyFor = (language: string, text: string) =>
           `${language}\u0000${requestedVoice}\u0000${requestedSpeed}\u0000${text.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase()}`;
         const reusableSpeech = new Map(
@@ -1460,10 +1566,10 @@ function StagePage({
         }, new Map<string, typeof pending>()).values()];
         const speechConcurrency =
           book.performanceMode === "eco"
-            ? 4
+            ? 3
             : book.performanceMode === "maximum"
-              ? provider === "gemini" ? 12 : 20
-              : provider === "gemini" ? 6 : 12;
+              ? provider === "gemini" ? 8 : 8
+              : provider === "gemini" ? 5 : 5;
         const speechCheckpointSize = speechConcurrency * 4;
         for (let index = 0; index < pendingGroups.length; index += speechCheckpointSize) {
           const batch = pendingGroups.slice(index, index + speechCheckpointSize);
@@ -1524,16 +1630,27 @@ function StagePage({
         await onChange(working, "Completed narration and word highlighting");
         toast.complete("Narration and word highlighting are ready for review.");
       } catch (error) {
-        if (!isAbortError(error))
+        console.error("[speech-stage]", error);
+        if (!isAbortError(error) || !controller.signal.aborted) {
+          const failed = {
+            ...book,
+            pipelineRun: book.pipelineRun
+              ? { ...book.pipelineRun, status: "stopped" as const }
+              : undefined,
+          };
+          await onChange(failed, "Speech generation stopped with an error").catch(
+            () => undefined,
+          );
           toast.error(
             error instanceof Error
               ? error.message
               : "Speech generation failed.",
           );
+        }
       } finally {
         if (runController.current === controller)
           runController.current = undefined;
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1573,7 +1690,7 @@ function StagePage({
       return;
     }
     if (active === "validate") {
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         const validationReport = validateBook(book);
         await onChange(
@@ -1601,7 +1718,7 @@ function StagePage({
           toast.complete("The publication passed validation.");
         else toast.warning("Validation found issues that need attention.");
       } finally {
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1610,7 +1727,7 @@ function StagePage({
         toast.error("Run Validate and resolve all errors before exporting.");
         return;
       }
-      setProcessing(true);
+      setProcessingStage(active);
       try {
         const exportArtifact = await packageBook(book);
         await onChange(
@@ -1635,7 +1752,7 @@ function StagePage({
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Export failed.");
       } finally {
-        setProcessing(false);
+        setProcessingStage(undefined);
       }
       return;
     }
@@ -1655,7 +1772,7 @@ function StagePage({
     }
     cancelled.current = false;
     runController.current = new AbortController();
-    setProcessing(true);
+    setProcessingStage(active);
     try {
       const { default: mupdf } = await import("mupdf");
       const sourceBytes = await durableSourceBytes(book);
@@ -1717,7 +1834,7 @@ function StagePage({
         const textLayer = page.toStructuredText(
           "preserve-images,preserve-spans",
         );
-        const text = textLayer.asText();
+        const text = normalizeExtractedText(textLayer.asText());
         const bounds = page.getBounds();
         const layoutBlocks: ExtractedLayoutBlock[] = [];
         let line: ExtractedLayoutBlock | undefined;
@@ -1764,7 +1881,7 @@ function StagePage({
               )[0]?.value;
               layoutBlocks.push({
                 ...line,
-                text: line.text.replace(/\s+/g, " ").trim(),
+                text: normalizeExtractedText(line.text).replace(/\s+/g, " ").trim(),
               });
             }
             line = undefined;
@@ -1938,7 +2055,7 @@ function StagePage({
         error instanceof Error ? error.message : "PDF extraction failed.",
       );
     } finally {
-      setProcessing(false);
+      setProcessingStage(undefined);
     }
   }
   async function stop() {
@@ -1947,7 +2064,7 @@ function StagePage({
       new DOMException("Stage stopped by the user.", "AbortError"),
     );
     runController.current = undefined;
-    setProcessing(false);
+    setProcessingStage(undefined);
     await onChange(
       {
         ...book,
@@ -2064,7 +2181,7 @@ function StagePage({
     );
     toast.complete("The selected speech clip was regenerated.");
   }
-  async function resolveValidationWithAi() {
+  async function resolveValidationWithAi(onProgress?: (completed: number, total: number, pageNumber?: number) => void) {
     if (!providerKeys) {
       onConfigureProvider();
       return;
@@ -2075,7 +2192,9 @@ function StagePage({
     ))];
     let working = book;
     try {
-      for (const pageNumber of affectedPages) {
+      onProgress?.(0, Math.max(1, affectedPages.length));
+      for (const [pageIndex, pageNumber] of affectedPages.entries()) {
+        onProgress?.(pageIndex, affectedPages.length, pageNumber);
         const pageIssues = report.issues
           .filter((issue) => issue.pageNumber === pageNumber)
           .map((issue) => `- ${issue.message}`)
@@ -2096,6 +2215,7 @@ function StagePage({
           ),
         };
         await onChange(working, `AI resolved validation findings on page ${pageNumber}`);
+        onProgress?.(pageIndex + 1, affectedPages.length, pageNumber);
       }
       const validationReport = validateBook(working);
       await onChange(
@@ -2169,17 +2289,21 @@ function StagePage({
             </Button>
           ) : (
             <Button
-              disabled={prerequisiteBlocked}
+              disabled={prerequisiteBlocked || anotherStageRunning}
               onClick={() => void run()}
               title={
                 prerequisiteBlocked
-                  ? "Complete Language before running Speech"
+                  ? `Complete ${stages.find((item) => item.slug === prerequisite)?.label} before running ${stage.label}`
+                  : anotherStageRunning
+                    ? "Wait for the running stage to finish or stop it from that stage"
                   : undefined
               }
             >
               <Play data-icon="inline-start" />
               {prerequisiteBlocked
-                ? "Complete Language first"
+                ? `Complete ${stages.find((item) => item.slug === prerequisite)?.label} first`
+                : anotherStageRunning
+                  ? "Another stage is running"
                 : progress
                   ? "Run again"
                   : "Run stage"}
@@ -3277,8 +3401,14 @@ async function refinePageAssets(
             !asset.id.includes("composite-example") &&
             !asset.id.includes("composite-activity-diagram") &&
             (native.width < 48 || native.height < 48)
-          )
+          ) {
+            // Small repeated teaching objects (fruit, counters, pencils, and
+            // similar exercise artwork) are already valid native assets. They
+            // do not need chroma refinement, but they must remain available to
+            // Storyboard instead of silently disappearing from a row.
+            refined.push(asset);
             continue;
+          }
           const sample = document.createElement("canvas");
           sample.width = Math.min(96, native.width);
           sample.height = Math.min(96, native.height);
@@ -3994,8 +4124,8 @@ function ReadingLevelSelector({
       <CardHeader>
         <CardTitle>Audience reading level</CardTitle>
         <CardDescription>
-          This shared setting guides both Captioning and Easy Read. Changing it
-          marks both stages for rerun.
+          This shared setting guides image descriptions and their Easy Read
+          alternatives. Changing it marks both stages for rerun.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -4074,7 +4204,7 @@ function StageOutput({ book, stage }: { book: DeviceBook; stage: StageSlug }) {
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
                   <CardTitle>
-                    {stage === "easy-read" ? "Easy Read text" : "Image description"}
+                    {stage === "easy-read" ? "Easy Read image caption" : "Image description"}
                   </CardTitle>
                   <Badge variant="outline">Page {row.pageNumber}</Badge>
                 </div>
@@ -4784,6 +4914,15 @@ function applyImageCaptions(
     const figcaption = figure.querySelector("figcaption");
     if (figcaption) figcaption.textContent = caption;
   }
+  // Picture-to-number matching (e.g. "draw a line to match the objects and
+  // their number") can only be answered correctly once we know how many
+  // objects are actually in each picture - and that only becomes available
+  // right here, now that captions above have just been written into each
+  // figure's alt text. Doing this earlier (at Storyboard time) is why this
+  // activity used to fall back to one unusable free-text field.
+  finalizeMatchingActivities(document);
+  restoreMisidentifiedAnswerImages(document, page.pageNumber);
+  insertImageNumberTableAnswers(document, page.pageNumber);
   return {
     ...page,
     blocks,
@@ -4791,14 +4930,372 @@ function applyImageCaptions(
   };
 }
 
+const captionCountWords: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+
+function countFromCaption(caption: string) {
+  const match = caption
+    .toLocaleLowerCase()
+    .match(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b/);
+  if (!match) return undefined;
+  const token = match[1]!;
+  return /^\d+$/.test(token) ? Number(token) : captionCountWords[token];
+}
+
+/** Fills in a real per-picture answer key for matching activities that fell
+ * back to a single free-text field because no text-based pairs existed at
+ * Storyboard time (see matchingPairsFromLayout). Only acts when every
+ * picture's caption-derived count maps to exactly one scrambled numeral
+ * candidate on the page with no ties - an ambiguous page is left on the
+ * fallback for manual review rather than guessing an answer key. */
+function finalizeMatchingActivities(document: Document) {
+  const fallbackGames = [
+    ...document.querySelectorAll<HTMLElement>(".litera-matching-game"),
+  ].filter((game) => !game.querySelector(".litera-matching-grid"));
+  if (fallbackGames.length !== 1) return;
+  const game = fallbackGames[0]!;
+
+  // The worked "Example" row has its own already-answered numeral sitting
+  // in the same numeral column as the real questions - excluded above from
+  // `resolved` via its image caption, but its numeral must be excluded here
+  // too, or the counts will always be one short of a clean bijection. It
+  // reliably sits on the same printed line as the "Example"/"Mfano" label.
+  const layoutTop = (element: Element) =>
+    Number(
+      (element.getAttribute("style") ?? "").match(
+        /(?:^|;)\s*top\s*:\s*([\d.]+)%/i,
+      )?.[1] ?? NaN,
+    );
+  const exampleTops = [...document.querySelectorAll<HTMLElement>("[data-layout-block]")]
+    .filter((element) => /\b(?:example|mfano)\b/i.test(element.textContent ?? ""))
+    .map(layoutTop);
+  const candidateNumerals = [
+    ...document.querySelectorAll<HTMLElement>("[data-layout-block]"),
+  ]
+    .filter(
+      (element) =>
+        !exampleTops.some((top) => Math.abs(layoutTop(element) - top) <= 2),
+    )
+    .map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim())
+    .filter((text) => /^\d{1,3}$/.test(text));
+  if (candidateNumerals.length < 2) return;
+
+  const resolved = [
+    ...document.querySelectorAll<HTMLElement>("figure[data-asset-id]"),
+  ]
+    .filter((figure) => figure.getAttribute("aria-hidden") !== "true")
+    .map((figure) => {
+      const caption = figure.querySelector("img")?.alt?.trim() ?? "";
+      return { figure, caption, count: countFromCaption(caption) };
+    })
+    .filter(
+      (item): item is { figure: HTMLElement; caption: string; count: number } =>
+        item.count !== undefined && !/\bexample\b/i.test(item.caption),
+    );
+  if (resolved.length < 2) return;
+
+  // Trust this only when it is a clean bijection: every picture's count
+  // appears exactly once among the candidates, and every candidate is used.
+  const countTally = new Map<number, number>();
+  for (const item of resolved)
+    countTally.set(item.count, (countTally.get(item.count) ?? 0) + 1);
+  const numeralTally = new Map<number, number>();
+  for (const text of candidateNumerals)
+    numeralTally.set(Number(text), (numeralTally.get(Number(text)) ?? 0) + 1);
+  const cleanBijection =
+    resolved.length === candidateNumerals.length &&
+    [...countTally.entries()].every(
+      ([count, occurrences]) =>
+        occurrences === 1 && numeralTally.get(count) === 1,
+    );
+  if (!cleanBijection) return;
+
+  const activityId =
+    game.getAttribute("data-activity-item") ?? "matching-activity";
+  const options = [...new Set(candidateNumerals)].sort(
+    (a, b) => Number(a) - Number(b),
+  );
+  resolved.forEach((item, index) => {
+    const feedbackId = `${activityId}-picture-feedback-${index + 1}`;
+    const control = `<label class="litera-response litera-response--stack"><span>Choose the number that matches this picture</span><select data-correct-answer="${escapeHtmlAttribute(String(item.count))}" aria-label="Choose the number that matches: ${escapeHtmlAttribute(item.caption)}" aria-describedby="${feedbackId}"><option value="">Choose a number</option>${options.map((value) => `<option value="${escapeHtmlAttribute(value)}">${escapeHtmlAttribute(value)}</option>`).join("")}</select><span class="litera-answer-feedback" id="${feedbackId}" aria-live="polite"></span></label>`;
+    // Figures carry their own absolute left/top/width/height (same scheme
+    // insertActivityControl reads off [data-layout-block] text nodes), so
+    // anchor the new select right under its picture instead of leaving it
+    // to normal document flow, which would abandon the print layout.
+    const style = item.figure.getAttribute("style") ?? "";
+    const left = style.match(/(?:^|;)\s*left\s*:\s*([\d.]+%)/i)?.[1] ?? "8%";
+    const width = style.match(/(?:^|;)\s*width\s*:\s*([\d.]+%)/i)?.[1] ?? "40%";
+    const top = Number(style.match(/(?:^|;)\s*top\s*:\s*([\d.]+)%/i)?.[1] ?? 0);
+    const height = Number(
+      style.match(/(?:^|;)\s*height\s*:\s*([\d.]+)%/i)?.[1] ?? 4,
+    );
+    // The first group also carries the bare activity id (matching the
+    // fill-blank pattern elsewhere: outer/primary control = bare id, the
+    // rest = suffixed) so anything looking up the original activity - the
+    // completeness validator included - still finds a live control here
+    // instead of the removed .litera-matching-game.
+    const groupId = index === 0 ? activityId : `${activityId}-${index + 1}`;
+    item.figure.insertAdjacentHTML(
+      "afterend",
+      `<div class="litera-response-group" data-activity-item="${groupId}" style="left:${left};top:${Math.min(94, top + height + 0.6).toFixed(2)}%;width:${width}">${control}</div>`,
+    );
+  });
+  game.remove();
+}
+
+/** buildRepeatedAnswerBoxTargets (geometry-storyboard-engine.ts) assumes any
+ * page-wide cluster of same-sized repeated assets is a printed blank
+ * answer-box glyph, and glues an answer input directly onto (then hides) each
+ * one. On a "count each group and write its number" table, that cluster is
+ * often real content clipart instead (e.g. six individual fruit icons), which
+ * both destroys the picture the pupil needs to count and never places an
+ * answer control for the other rows at all. Captions aren't available yet at
+ * Storyboard time to tell the two cases apart, so - like
+ * finalizeMatchingActivities above - this runs after captioning, once each
+ * hidden figure's real caption is known, and only touches this one
+ * proven-buggy evidence type rather than every hiding mechanism. */
+function restoreMisidentifiedAnswerImages(document: Document, pageNumber: number) {
+  const visibleText = [...document.querySelectorAll<HTMLElement>("[data-layout-block]")]
+    .map((element) => element.textContent ?? "")
+    .join(" ");
+  // Only counting-picture activities can legitimately turn a repeated
+  // printed-box cluster back into visible content. On ordinary write-in
+  // exercises ("write two in numerals"), captions inherited from the
+  // nearest word make the empty boxes look like meaningful illustrations;
+  // restoring them creates the duplicate second column seen on page 20.
+  if (
+    !/\b(?:count|how many|group(?:s)? of|objects?|fruits?|pictures?)\b/i.test(
+      visibleText,
+    )
+  )
+    return;
+  const labels = [
+    ...document.querySelectorAll<HTMLElement>(
+      '.source-answer-line[data-placement-evidence="repeated-printed-answer-box"]',
+    ),
+  ];
+  if (!labels.length) return;
+  const hiddenIds = new Set<string>();
+  for (const style of document.querySelectorAll("style[data-litera-answer-visual-replacement]"))
+    for (const match of (style.textContent ?? "").matchAll(
+      /figure\[data-asset-id="([^"]+)"\]\{visibility:hidden\}/g,
+    ))
+      hiddenIds.add(match[1]!);
+  if (!hiddenIds.size) return;
+
+  const rect = (element: Element) => {
+    const style = element.getAttribute("style") ?? "";
+    const num = (property: string) =>
+      Number(
+        style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([\\d.]+)%`, "i"))?.[1] ?? NaN,
+      );
+    return { left: num("left"), top: num("top"), width: num("width"), height: num("height") };
+  };
+  const close = (a: number, b: number, tolerance: number) =>
+    Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
+  const placeholderCaption =
+    /^visual used in this section|\b(?:blank|empty)\s+(?:box|space|answer)|writing\s+(?:box|line|rule)|answer\s+box|write-in\s+(?:box|line)/i;
+
+  const figures = [...document.querySelectorAll<HTMLElement>("figure[data-asset-id]")];
+  // Pair every label with its figure first, regardless of caption quality -
+  // a row where the AI captioned only one of several near-identical icons
+  // (e.g. one "seven papayas...in a row" summary among six otherwise-generic
+  // placeholders) must still restore every figure in that row, not just the
+  // one whose caption happened to come back non-generic.
+  const rows: Array<{ labels: HTMLElement[]; figures: HTMLElement[] }> = [];
+  for (const label of labels) {
+    const labelRect = rect(label);
+    // Repeated-printed-answer-box targets set bbox left/top/width literally
+    // equal to the asset's own bounds, but the *rendered* answer-line height
+    // is deliberately shrunk to a single writing-line height (see the
+    // answerLines template's own height formula) rather than the full image
+    // height - so only left/top/width identify the matching figure; height
+    // is expected to differ and must not be part of the match.
+    const figure = figures.find((candidate) => {
+      if (!hiddenIds.has(candidate.dataset.assetId ?? "")) return false;
+      const figureRect = rect(candidate);
+      return (
+        close(labelRect.left, figureRect.left, 1.5) &&
+        close(labelRect.top, figureRect.top, 1.5) &&
+        close(labelRect.width, figureRect.width, 1.5)
+      );
+    });
+    if (!figure) continue;
+    const row = rows.find((candidate) => close(rect(candidate.labels[0]!).top, labelRect.top, 2.5));
+    if (row) {
+      row.labels.push(label);
+      row.figures.push(figure);
+    } else rows.push({ labels: [label], figures: [figure] });
+  }
+  // A row is only trustworthy once at least one of its own figures has a
+  // real, specific caption - otherwise leave it exactly as found rather than
+  // guess from nothing but generic placeholders.
+  const trustedRows = rows.filter((row) =>
+    row.figures.some((figure) => {
+      const caption = figure.querySelector("img")?.alt?.trim() ?? "";
+      return caption && !placeholderCaption.test(caption);
+    }),
+  );
+  if (!trustedRows.length) return;
+
+  trustedRows.forEach((row, index) => {
+    const captions = row.figures.map(
+      (figure) => figure.querySelector("img")?.alt?.trim() ?? "",
+    );
+    // A caption whose own count already covers every figure in the row (e.g.
+    // "Seven papayas...in a row" for a 7-image row) is describing the whole
+    // row, not just the one icon it happens to be attached to - use it alone
+    // rather than also summing the other (generic) figures on top of it.
+    const summaryCount = captions
+      .map((caption) => countFromCaption(caption))
+      .find((count) => count !== undefined && count >= row.figures.length);
+    const total =
+      summaryCount ??
+      captions.reduce((sum, caption) => {
+        const isGeneric = !caption || placeholderCaption.test(caption);
+        return sum + (isGeneric ? 1 : (countFromCaption(caption) ?? 1));
+      }, 0);
+    // The hiding rule carries no !important, so an inline override on the
+    // element itself always wins the cascade regardless of specificity. Also
+    // strip each restored id's own rule out of the stylesheet text, so the
+    // validator's hidden-image count (which greps that stylesheet, not
+    // computed visibility) doesn't keep counting a now-visible image.
+    for (const figure of row.figures) {
+      figure.style.setProperty("visibility", "visible");
+      const assetId = figure.dataset.assetId ?? "";
+      for (const style of document.querySelectorAll("style[data-litera-answer-visual-replacement]"))
+        style.textContent = (style.textContent ?? "").replace(
+          new RegExp(`figure\\[data-asset-id="${assetId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\]\\{visibility:hidden\\}`, "g"),
+          "",
+        );
+    }
+    for (const label of row.labels) label.remove();
+
+    const lastFigure = row.figures[row.figures.length - 1]!;
+    const anchorRect = rect(lastFigure);
+    const roomRight = 98 - (anchorRect.left + anchorRect.width);
+    const left = roomRight >= 9 ? anchorRect.left + anchorRect.width + 1 : anchorRect.left;
+    const top =
+      roomRight >= 9
+        ? anchorRect.top
+        : Math.min(94, anchorRect.top + anchorRect.height + 0.6);
+    const feedbackId = `restored-answer-feedback-${index + 1}`;
+    // Number alongside any control already tagged for this page's activity
+    // (the same first-bare/rest-suffixed convention used elsewhere, e.g.
+    // finalizeMatchingActivities above), so the completeness validator - and
+    // anything else looking up data-activity-item - can find this control
+    // instead of reporting the activity as having none.
+    const baseId = `page-${pageNumber}-activity-0`;
+    const existingCount = document.querySelectorAll(`[data-activity-item^="${baseId}"]`).length;
+    const groupId = existingCount === 0 ? baseId : `${baseId}-${existingCount + 1}`;
+    const control = `<label class="source-answer-line" data-activity-item="${groupId}" data-placement-evidence="restored-repeated-answer-box" style="left:${left.toFixed(2)}%;top:${top.toFixed(2)}%;width:8%;height:${Math.max(3, anchorRect.height).toFixed(2)}%"><span class="sr-only">Answer</span><input type="text" inputmode="decimal" data-correct-answer="${escapeHtmlAttribute(String(total))}" autocomplete="off" aria-label="Write how many are shown in this row" aria-describedby="${feedbackId}"><span class="answer-feedback" id="${feedbackId}" aria-live="polite"></span></label>`;
+    lastFigure.insertAdjacentHTML("afterend", control);
+  });
+}
+
+/** buildRepeatedAnswerBoxTargets (geometry-storyboard-engine.ts) only ever
+ * creates an answer target for the single largest same-dimension asset
+ * cluster on the whole page (see restoreMisidentifiedAnswerImages above) - so
+ * on a printed "item picture | empty Number column" table with several rows
+ * of differently-sized item images (e.g. one row of six merged "avocados"
+ * pixels, another of seven individually-sized "papaya" images), every row
+ * except the one lucky cluster gets no answer control at all, geometry has
+ * no way to know each row's count, and captions aren't ready yet at
+ * Storyboard time. Once captions exist, find the table's own printed
+ * "Number"/"Namba" column header, group the page's real-content images into
+ * rows, and give every row that still has no control of its own a real
+ * answer input positioned in that empty column - reusing the exact caption
+ * counting already proven for the one row the geometry heuristic did catch. */
+function insertImageNumberTableAnswers(document: Document, pageNumber: number) {
+  const layoutBlocks = [...document.querySelectorAll<HTMLElement>("[data-layout-block]")];
+  const numberHeader = layoutBlocks.find((element) =>
+    /^(?:number|namba)$/i.test((element.textContent ?? "").trim()),
+  );
+  if (!numberHeader) return;
+
+  const rect = (element: Element) => {
+    const style = element.getAttribute("style") ?? "";
+    const num = (property: string) =>
+      Number(
+        style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([\\d.]+)%`, "i"))?.[1] ?? NaN,
+      );
+    return { left: num("left"), top: num("top"), width: num("width"), height: num("height") };
+  };
+  const close = (a: number, b: number, tolerance: number) =>
+    Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
+  const placeholderCaption =
+    /^visual used in this section|\b(?:blank|empty)\s+(?:box|space|answer)|writing\s+(?:box|line|rule)|answer\s+box|write-in\s+(?:box|line)/i;
+
+  const numberColumnLeft = rect(numberHeader).left;
+  if (!Number.isFinite(numberColumnLeft)) return;
+
+  // Decorative page borders run nearly the full page height; no real table
+  // row's own item image does, so a generous height ceiling safely excludes
+  // them without needing to name specific asset ids.
+  const figures = [...document.querySelectorAll<HTMLElement>("figure[data-asset-id]")].filter(
+    (figure) => rect(figure).height < 20,
+  );
+
+  const rows: Array<{ figures: HTMLElement[]; top: number }> = [];
+  for (const figure of figures) {
+    const figureRect = rect(figure);
+    if (!Number.isFinite(figureRect.top)) continue;
+    const caption = figure.querySelector("img")?.alt?.trim() ?? "";
+    if (!caption || placeholderCaption.test(caption)) continue;
+    const row = rows.find((candidate) => close(candidate.top, figureRect.top, 2.5));
+    if (row) row.figures.push(figure);
+    else rows.push({ figures: [figure], top: figureRect.top });
+  }
+  if (!rows.length) return;
+
+  rows.forEach((row, index) => {
+    // A row that already has any answer control near it - the one row
+    // restoreMisidentifiedAnswerImages just fixed, or anything else - must
+    // not get a second, competing one.
+    const existingControl = [
+      ...document.querySelectorAll<HTMLElement>(".source-answer-line, [data-activity-item]"),
+    ].find((existing) => close(rect(existing).top, row.top, 4));
+
+    const total = row.figures.reduce((sum, figure) => {
+      const caption = figure.querySelector("img")?.alt?.trim() ?? "";
+      return sum + (countFromCaption(caption) ?? 1);
+    }, 0);
+    if (existingControl) {
+      const input = existingControl.querySelector<HTMLInputElement>(
+        "input, select, textarea",
+      );
+      input?.setAttribute("data-correct-answer", String(total));
+      input?.setAttribute(
+        "aria-label",
+        "Write how many are shown in this row",
+      );
+      return;
+    }
+    const rowHeight = Math.max(...row.figures.map((figure) => rect(figure).height));
+    const feedbackId = `table-row-answer-feedback-${index + 1}`;
+    // Same first-bare/rest-suffixed data-activity-item convention as
+    // restoreMisidentifiedAnswerImages above, continuing its own numbering
+    // if it already tagged a control for this page's activity, so the
+    // completeness validator can find every row's control, not just one.
+    const baseId = `page-${pageNumber}-activity-0`;
+    const existingCount = document.querySelectorAll(`[data-activity-item^="${baseId}"]`).length;
+    const groupId = existingCount === 0 ? baseId : `${baseId}-${existingCount + 1}`;
+    const control = `<label class="source-answer-line" data-activity-item="${groupId}" data-placement-evidence="image-number-table" style="left:${numberColumnLeft.toFixed(2)}%;top:${row.top.toFixed(2)}%;width:8%;height:${Math.max(3, rowHeight).toFixed(2)}%"><span class="sr-only">Answer</span><input type="text" inputmode="decimal" data-correct-answer="${escapeHtmlAttribute(String(total))}" autocomplete="off" aria-label="Write how many are shown in this row" aria-describedby="${feedbackId}"><span class="answer-feedback" id="${feedbackId}" aria-live="polite"></span></label>`;
+    document.querySelector("main[data-litera-page]")?.insertAdjacentHTML("beforeend", control);
+  });
+}
+
 function cleanImageCaption(value: string) {
   let caption = value.replace(/\s+/g, " ").trim();
-  const duplicatePrefix = /^(?:(?:an?\s+)?(?:image|illustration|figure|diagram|photo|picture)\s+(?:of|showing|depicting)\s+){2,}/i;
-  caption = caption.replace(duplicatePrefix, "");
-  caption = caption.replace(
-    /^((?:an?\s+)?(?:image|illustration|figure|diagram|photo|picture)\s+(?:of|showing|depicting)\s+)\1+/i,
-    "$1",
-  );
+  const visualPrefix = /^(?:an?\s+)?(?:image|illustration|figure|diagram|photo|picture)\s+(?:accompanying|for|of|showing|depicting)\s+/i;
+  let removedPrefix = false;
+  while (visualPrefix.test(caption)) {
+    caption = caption.replace(visualPrefix, "").trim();
+    removedPrefix = true;
+  }
+  if (removedPrefix && caption) caption = `Illustration of ${caption}`;
   return caption || "Meaningful textbook visual.";
 }
 function buildEasyReadCatalog(
@@ -5123,13 +5620,28 @@ async function renderStoryboardSourcePage(input: RenderStoryboardSourceInput) {
     throw new Error(
       `Page ${sourcePage.pageNumber} has no extracted source image.`,
     );
-  const oralOnlyPage = /\b(?:read|practise|practice)\s+(?:the\s+.+\s+)?aloud\b|\borally\b|\bsoma\s+kwa\s+sauti\b/i.test(
+  const hasOralInstruction = /\b(?:read|practise|practice)\s+(?:the\s+.+\s+)?aloud\b|\borally\b|\bsoma\s+kwa\s+sauti\b/i.test(
     [
       extractedPage.text ?? "",
       sourcePage.title,
       ...sourcePage.sections.map((section) => section.text),
     ].join(" "),
   );
+  const hasInstructionalVisuals =
+    (extractedPage.layoutBlocks ?? []).some(
+      (block) =>
+        block.type === "image" &&
+        block.bbox.w >= 5 &&
+        block.bbox.h >= 5 &&
+        block.bbox.w * block.bbox.h >= 120,
+    ) ||
+    (extractedPage.assets ?? []).some((asset) =>
+      isMeaningfulStoryboardAsset(asset),
+    );
+  // “Read aloud” can be one activity on an otherwise image-rich page. Treat
+  // the page as oral-only only when the source itself has no instructional
+  // visuals; otherwise examples such as counting fruit silently disappeared.
+  const oralOnlyPage = hasOralInstruction && !hasInstructionalVisuals;
   const thumbnail = await storyboardPhase(
     `Restoring page ${sourcePage.pageNumber} image`,
     () => readablePageImage(book, extractedPage),
@@ -5593,6 +6105,7 @@ async function createGeometryStoryboardPage(
       decoration: options.decoration,
       tocEntries: options.tocEntries,
       tocTitle: options.tocTitle,
+      activityPrompts: sourcePage.activities.map((activity) => activity.prompt),
     },
   );
   return {
@@ -5646,7 +6159,11 @@ function isMeaningfulStoryboardAsset(asset: ExtractedPageAsset) {
   )
     return false;
   const { w, h } = asset.bounds;
-  if (w < 12 || h < 12 || w * h < 1_500) return false;
+  // Counting and matching activities often use intentionally small repeated
+  // objects (fruit, counters, shapes). They are instructional content, not
+  // decoration, and must survive Storyboard even when each instance occupies
+  // only a few hundred source pixels.
+  if (w < 5 || h < 5 || w * h < 120) return false;
   const ratio = w / Math.max(1, h);
   return ratio >= 0.03 && ratio <= 30;
 }
@@ -5860,11 +6377,322 @@ function reinforceTablesAndActivities(
 ) {
   const safeAccent = /^#[0-9a-f]{6}$/i.test(accent) ? accent : "#176b3a";
   const css = `<style id="litera-semantic-controls">main[data-litera-page] table{border-collapse:collapse!important;border:1.5px solid ${safeAccent}!important}main[data-litera-page] th,main[data-litera-page] td{border:1px solid color-mix(in srgb,${safeAccent} 55%,#6b7280)!important;padding:.35em .5em!important}main[data-litera-page] th{background:color-mix(in srgb,${safeAccent} 14%,#fff)!important;font-weight:700}.litera-response{display:flex;max-width:min(100%,34rem);align-items:center;gap:.55em;margin:.55em 0 1.1em}.litera-response-set{display:grid;grid-template-columns:repeat(var(--answer-count,1),minmax(4.5rem,1fr));gap:.75em;max-width:min(100%,34rem);margin:.65em 0 1.1em;padding:0;border:0}.litera-response-set .litera-response{min-width:0;margin:0}.litera-inline-answer{position:relative;display:inline-flex;min-width:4.5em;max-width:9em;margin:0 .18em;vertical-align:baseline}.litera-inline-answer input{box-sizing:border-box;width:100%;height:1.75em;border:0;border-bottom:2px solid color-mix(in srgb,${safeAccent} 70%,#4b5563);border-radius:.2em .2em 0 0;background:color-mix(in srgb,${safeAccent} 5%,#fff);color:#171717;padding:.1em .35em;font:inherit;text-align:center}.litera-inline-answer input:focus{border-bottom-color:${safeAccent};outline:.18em solid color-mix(in srgb,${safeAccent} 20%,transparent);outline-offset:.08em}.litera-inline-answer .litera-answer-feedback{position:absolute;top:100%;left:0;z-index:2;min-width:max-content}.litera-response--stack{display:grid;max-width:100%}.litera-response input[type="text"],.litera-response textarea,.litera-response select{box-sizing:border-box;width:100%;min-height:2.65em;border:2px solid color-mix(in srgb,${safeAccent} 58%,#6b7280);border-radius:.4em;background:#fff;color:#171717;padding:.45em .65em;font:inherit}.litera-response input[inputmode="numeric"],.litera-response input[inputmode="decimal"]{max-width:18rem;text-align:center;font-weight:600}.litera-response input:focus,.litera-response textarea:focus,.litera-response select:focus{border-color:${safeAccent};outline:.22em solid color-mix(in srgb,${safeAccent} 22%,transparent);outline-offset:.08em}.litera-response input[data-answer-state="correct"],.litera-inline-answer input[data-answer-state="correct"]{border-color:#16803c;background:#effcf3}.litera-response input[data-answer-state="incorrect"],.litera-inline-answer input[data-answer-state="incorrect"]{border-color:#b42318;background:#fff3f1}.litera-response textarea{min-height:6.5em;resize:vertical;line-height:1.6}.litera-choice{display:flex;min-height:2.75em;align-items:center;gap:.55em;padding:.35em .5em;border-radius:.4em}.litera-choice:focus-within{background:color-mix(in srgb,${safeAccent} 9%,#fff)}.litera-choice input{accent-color:${safeAccent};width:1.15em;height:1.15em}.litera-answer-feedback{font-size:.82em;font-weight:700}.litera-answer-feedback[data-state="correct"]{color:#126b34}.litera-answer-feedback[data-state="incorrect"]{color:#9f1c14}.litera-answer-toast{position:fixed;z-index:30;left:50%;bottom:1.2rem;max-width:min(90%,26rem);transform:translateX(-50%);padding:.65rem 1rem;border-radius:999px;background:#202124;color:#fff;font:700 .9rem/1.3 system-ui;box-shadow:0 .4rem 1.2rem rgba(0,0,0,.28)}.litera-answer-toast[data-state="correct"]{background:#126b34}.litera-answer-toast[data-state="incorrect"]{background:#9f1c14}.litera-response-group{position:absolute;z-index:6;box-sizing:border-box}.litera-response-group .litera-response{margin:0}.litera-question-answer{position:absolute;right:2.3%;z-index:8;width:2.35cqw;min-width:1.25rem;color:#171717}.litera-question-answer summary{display:grid;box-sizing:border-box;width:2.35cqw;height:2.35cqw;min-width:1.25rem;min-height:1.25rem;cursor:pointer;place-items:center;border:.12cqw solid ${safeAccent};border-radius:999px;background:#fff;color:${safeAccent};font:700 1.15cqw/1 system-ui;list-style:none;box-shadow:0 .12cqw .3cqw rgba(0,0,0,.16)}.litera-question-answer summary::-webkit-details-marker{display:none}.litera-question-answer[open]{width:min(42%,18rem);padding:.6cqw;border:.12cqw solid ${safeAccent};border-radius:.55cqw;background:#fff;box-shadow:0 .5cqw 1.2cqw rgba(0,0,0,.2)}.litera-question-answer[open] summary{margin-left:auto}.litera-question-answer .litera-response{display:grid;margin:.45cqw 0 0;max-width:none}.litera-question-answer .litera-response input{min-height:2.2cqw}@media(max-width:520px){.litera-response-set{grid-template-columns:repeat(2,minmax(4.5rem,1fr))}.litera-question-answer[open]{width:72%}}</style>`;
-  const interactionCss = `<style id="litera-activity-games">.litera-response--inline-choice{display:flex;flex-wrap:wrap;gap:.35em .8em;padding:.35em .5em;border:.1cqw solid color-mix(in srgb,${safeAccent} 38%,#fff);border-radius:.45em;background:rgba(255,255,255,.96)}.litera-response--inline-choice legend{float:left;margin-right:.6em;font-weight:700}.litera-response--inline-choice .litera-choice{display:inline-flex;min-height:1.8em;padding:.1em .35em}.litera-matching-game{position:relative;max-width:min(100%,32rem);padding:.5em;border:.1cqw solid ${safeAccent};border-radius:.55em;background:#fff}.litera-matching-game summary{cursor:pointer;color:${safeAccent};font-weight:700}.litera-matching-grid{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:.4em;align-items:center;margin-top:.5em}.litera-match-left{font-weight:700}.litera-match-arrow{text-align:center;color:${safeAccent}}.litera-matching-grid select{min-width:0;width:100%;padding:.35em;border:.1cqw solid color-mix(in srgb,${safeAccent} 55%,#777);border-radius:.35em;background:#fff}@media(max-width:520px){.litera-matching-grid{grid-template-columns:minmax(0,1fr);}.litera-match-arrow{display:none}}</style>`;
-  let output = html.replace(/<\/head>/i, `${css}${interactionCss}</head>`);
+  const interactionCss = `<style id="litera-activity-games">.litera-response--inline-choice{display:flex;flex-wrap:wrap;gap:.35em .8em;padding:.35em .5em;border:.1cqw solid color-mix(in srgb,${safeAccent} 38%,#fff);border-radius:.45em;background:rgba(255,255,255,.96)}.litera-response--inline-choice legend{float:left;margin-right:.6em;font-weight:700}.litera-response--inline-choice .litera-choice{display:inline-flex;min-height:1.8em;padding:.1em .35em}.litera-has-activity-extension{aspect-ratio:auto!important;overflow:visible!important;padding-bottom:5cqw}.litera-activity-extension{position:relative;z-index:15;left:5%;width:90%;box-sizing:border-box;padding:2cqw 2.5cqw 3cqw;border-top:.12cqw solid color-mix(in srgb,${safeAccent} 45%,#fff);background:#fff}.litera-matching-game{position:relative;width:100%;box-sizing:border-box;padding:1.2cqw;border:.12cqw solid ${safeAccent};border-radius:.8cqw;background:#fff}.litera-matching-game h3{margin:0 0 1cqw;color:${safeAccent};font:700 2cqw/1.2 system-ui}.litera-matching-board{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1cqw}.litera-match-bank,.litera-match-targets{display:grid;gap:.7cqw}.litera-match-card,.litera-match-target{box-sizing:border-box;min-height:4.2cqw;padding:.7cqw 1cqw;border:.1cqw solid color-mix(in srgb,${safeAccent} 58%,#777);border-radius:.55cqw;background:color-mix(in srgb,${safeAccent} 7%,#fff);color:#171717;font:650 1.45cqw/1.25 system-ui;text-align:left}.litera-match-card{cursor:grab}.litera-match-card[aria-pressed="true"]{outline:.28cqw solid color-mix(in srgb,${safeAccent} 28%,transparent)}.litera-match-target{display:flex;align-items:center;justify-content:space-between;gap:.7cqw;cursor:pointer}.litera-match-target[data-answer-state="correct"]{border-color:#16803c;background:#effcf3}.litera-match-target[data-answer-state="incorrect"]{border-color:#b42318;background:#fff3f1}.litera-match-slot{min-width:35%;font-weight:500;color:#5f6368}.litera-matching-grid{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:.4em;align-items:center;margin-top:.5em}.litera-match-left{font-weight:700}.litera-match-arrow{text-align:center;color:${safeAccent}}.litera-matching-grid select{min-width:0;width:100%;padding:.35em;border:.1cqw solid color-mix(in srgb,${safeAccent} 55%,#777);border-radius:.35em;background:#fff}@media(max-width:520px){.litera-matching-board,.litera-matching-grid{grid-template-columns:minmax(0,1fr)}.litera-match-arrow{display:none}}</style>`;
+  const fidelityCss = `<style id="litera-source-fidelity">.litera-source-word-card{display:flex!important;align-items:center!important;justify-content:center!important;box-sizing:border-box!important;padding:.15em .45em!important;border:.08cqw solid color-mix(in srgb,${safeAccent} 20%,#b7d8d6)!important;border-radius:.05cqw!important;background:color-mix(in srgb,${safeAccent} 12%,#fff)!important;box-shadow:.14cqw .19cqw .2cqw rgba(0,0,0,.3)!important;font-weight:600!important}.litera-submit-answers,.litera-submit-all{min-width:22%!important;min-height:3.4cqw!important;padding:.9cqw 1.8cqw!important;font-size:1.4cqw!important;box-shadow:0 .2cqw .55cqw rgba(0,0,0,.22)!important}.litera-activity-launchers{position:relative;z-index:25;left:5%;width:90%;box-sizing:border-box;display:flex;align-items:center;justify-content:flex-end;gap:.75cqw;flex-wrap:wrap;padding:1.4cqw 0 3cqw;background:#fff}.litera-activity-launchers>span{margin-right:auto;color:#404040;font:650 1.35cqw/1.2 system-ui}.litera-play-activity{box-sizing:border-box;min-height:3.3cqw;padding:.7cqw 1.25cqw;border:.1cqw solid ${safeAccent};border-radius:999px;background:${safeAccent};color:#fff;font:700 1.25cqw/1 system-ui;cursor:pointer}.litera-play-activity[aria-pressed="true"]{background:#fff;color:${safeAccent}}main:not(.litera-activity-playing) .illustration-choice-surface,main:not(.litera-activity-playing) .litera-response-group,main:not(.litera-activity-playing) .litera-submit-answers,main:not(.litera-activity-playing) .litera-submit-all,main:not(.litera-activity-playing) [data-litera-trace-controls],main:not(.litera-activity-playing) .litera-matching-game{visibility:hidden!important;pointer-events:none!important}main:not(.litera-activity-playing) .source-answer-line input{opacity:0!important;pointer-events:none!important}main.litera-activity-playing .illustration-choice-surface,main.litera-activity-playing .source-answer-line input{transition:opacity .18s ease,box-shadow .18s ease}@media(max-width:520px){.litera-activity-launchers{align-items:stretch;flex-direction:column}.litera-activity-launchers>span{margin-right:0}.litera-play-activity{width:100%;font-size:2.7cqw}}</style>`;
+  const structuralOverrides = `<style id="litera-structural-overrides">
+main[data-litera-page] table{box-sizing:border-box!important;border-collapse:collapse!important;overflow:hidden!important}
+main[data-litera-page] tr{box-sizing:border-box!important}
+main[data-litera-page] th,main[data-litera-page] td{box-sizing:border-box!important;padding:.45em .65em!important;vertical-align:middle!important}
+main[data-litera-page] th,main[data-litera-page] .source-data-table td{font-family:'Arial Black',Arial,'Helvetica Neue',sans-serif!important;font-size:max(2cqw,1.05rem)!important;font-weight:900!important;font-stretch:normal!important;line-height:1!important}
+[data-litera-numeric-column="true"]{display:flex!important;align-items:center!important;justify-content:center!important;transform:none!important;text-align:center!important;font-size:var(--litera-column-font-size)!important;width:var(--litera-column-width)!important;font-weight:700!important;line-height:1!important}
+[data-litera-cell-centered="true"]{display:flex!important;align-items:center!important;box-sizing:border-box!important;height:var(--litera-cell-height)!important;min-height:0!important;transform:none!important}
+[data-litera-cell-centered="figure"]{justify-content:flex-start!important;overflow:hidden!important}
+[data-litera-cell-centered="figure"] img{width:100%!important;height:100%!important;object-fit:contain!important;object-position:left center!important}
+.activity-panel[data-litera-table-outline="true"]:after{content:"";position:absolute;z-index:20;inset:-.08cqw;box-sizing:border-box;pointer-events:none;border:.22cqw solid var(--litera-outline-color)!important;border-radius:inherit!important}
+.source-figure-table-outline{position:absolute;z-index:40;box-sizing:border-box;pointer-events:none;background:transparent;border:.22cqw solid var(--litera-outline-color)!important;border-radius:1.8cqw}
+.source-table-column-divider{position:absolute;z-index:39;box-sizing:border-box;pointer-events:none;width:0;border-left:.14cqw solid var(--litera-outline-color)!important}
+.source-image-count-table{border-radius:1.35cqw!important;overflow:hidden!important;font-family:'Sassoon Primary','SassoonPrimary','Comic Sans MS','Andika',cursive!important}.source-image-count-table th,.source-image-count-table td{height:50%!important;padding:.35cqw!important;text-align:center!important;vertical-align:middle!important;font-family:inherit!important}.source-image-count-table th{font-size:2.2cqw!important;font-weight:700!important}.source-image-count-table td>img{display:block!important;width:100%!important;height:100%!important;object-fit:contain!important}.source-image-count-table input{box-sizing:border-box;width:82%;height:58%;border:0;border-bottom:.12cqw solid #555;background:transparent;color:#171717;text-align:center;font:inherit!important;font-size:2cqw!important;font-weight:700!important;line-height:1!important;outline:none}
+.source-image-count-table th,.source-image-count-table td{border:0!important;border-right:.12cqw solid var(--source-table-accent)!important;border-bottom:.12cqw solid var(--source-table-accent)!important}.source-image-count-table tr>*:last-child{border-right:0!important}.source-image-count-table tr:last-child>*{border-bottom:0!important}
+.source-image-count-table .source-image-count-group{position:relative;padding:0!important;overflow:hidden;background:#fff}.source-image-count-table .source-image-count-group>img{position:absolute!important;z-index:1;inset:0;width:100%!important;height:100%!important;max-width:none!important;object-fit:fill!important}
+.source-image-count-slice{position:relative;display:block;width:100%;height:100%;overflow:hidden;background:#fff}.source-image-count-slice>img{display:block!important}
+.litera-response input[inputmode="numeric"],.litera-response input[inputmode="decimal"],.litera-activity-page input[inputmode="numeric"],.litera-activity-page input[inputmode="decimal"]{font-family:Arial,'Helvetica Neue',sans-serif!important;font-size:clamp(1rem,2cqw,1.5rem)!important;font-weight:800!important;line-height:1!important}
+.litera-question-answer{display:none!important}
+body:has(.litera-activity-launchers){display:flex!important;flex-direction:column!important;align-items:stretch!important}
+.litera-activity-launchers{position:relative!important;inset:auto!important;order:2;width:100%!important;max-width:none!important;box-sizing:border-box!important;margin:0!important;padding:.8rem 5%!important;border-top:1px solid #ddd!important;border-radius:0!important;background:#fff!important}
+.litera-activity-launchers>span{display:none!important}
+body.litera-hide-activity-bars .litera-activity-launchers{display:none!important}
+.litera-activity-page{position:fixed;z-index:100;inset:0;box-sizing:border-box;display:none;overflow:auto;background:#fff;padding:clamp(1rem,3cqw,2.5rem)}
+body.litera-activity-open .litera-activity-page{display:block}
+body.litera-activity-open>main[data-litera-page]{visibility:hidden}
+.litera-activity-page__header{position:sticky;z-index:4;top:0;display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:-1rem -1rem 1rem;padding:1rem;background:#fff;border-bottom:1px solid #d4d4d4}
+.litera-activity-page__heading{display:grid;gap:.2rem}.litera-activity-page__title{margin:0;color:${safeAccent};font:800 clamp(1.2rem,3cqw,2rem)/1.2 system-ui;text-transform:uppercase;letter-spacing:.025em}.litera-activity-page__reference{margin:0;color:#666;font:650 clamp(.78rem,1.35cqw,.95rem)/1.2 system-ui}
+.litera-close-activity{padding:.65rem 1rem;border:1px solid ${safeAccent};border-radius:999px;background:#fff;color:${safeAccent};font:700 1rem/1 system-ui;cursor:pointer}
+.litera-activity-page__content{display:grid;gap:1rem;max-width:70rem;margin:auto}
+.litera-activity-source{position:relative;width:100%;box-sizing:border-box;overflow:hidden;border:1px solid color-mix(in srgb,${safeAccent} 35%,#ddd);border-radius:1rem;background:#fff}.litera-activity-source>[data-layout-block],.litera-activity-source>figure,.litera-activity-source>.source-rule,.litera-activity-source>.activity-grid-cell,.litera-activity-source>.source-answer-line{position:absolute!important;margin:0!important;box-sizing:border-box!important}.litera-activity-source .source-answer-line input{opacity:1!important;pointer-events:auto!important}.litera-activity-source .source-folio,.litera-activity-source .litera-submit-answers,.litera-activity-source [data-litera-trace-controls]{display:none!important}
+.litera-activity-page__content>[data-activity-item]{position:relative!important;inset:auto!important;width:100%!important;height:auto!important;min-height:10rem!important;visibility:visible!important;pointer-events:auto!important}
+.litera-activity-page__content .litera-response,.litera-activity-page__content .litera-matching-game{visibility:visible!important;pointer-events:auto!important;max-width:none!important}
+</style>`;
+  let output = html.replace(/<\/head>/i, `${css}${interactionCss}${fidelityCss}${structuralOverrides}</head>`);
   if (typeof DOMParser !== "undefined") {
     const document = new DOMParser().parseFromString(output, "text/html");
-    const pageText = document.body.textContent ?? "";
+    // Tables are structural, not loose decoration. Mark numeric cells so the
+    // shared renderer keeps every number at the same sturdy textbook weight,
+    // and remove accidental empty edge fragments outside the table grid.
+    document.querySelectorAll<HTMLElement>("table td, table th").forEach((cell) => {
+      if (/^[\s\d+\-−=×÷.,/]+$/.test(cell.textContent ?? ""))
+        cell.dataset.numericLayout = "true";
+    });
+    const looseDigits = [...document.querySelectorAll<HTMLElement>('[data-layout-block][data-numeric-layout="true"]')]
+      .filter((node) => /^\d$/.test(node.textContent?.trim() ?? ""));
+    const digitColumns: HTMLElement[][] = [];
+    looseDigits.forEach((node) => {
+      const left = Number.parseFloat(node.style.left);
+      if (!Number.isFinite(left)) return;
+      const column = digitColumns.find((items) =>
+        Math.abs(Number.parseFloat(items[0]!.style.left) - left) <= .3,
+      );
+      if (column) column.push(node);
+      else digitColumns.push([node]);
+    });
+    digitColumns.filter((column) => column.length >= 4).forEach((column) => {
+      const fontSize = Math.max(...column.map((node) => Number.parseFloat(node.style.fontSize)).filter(Number.isFinite));
+      const columnLeft = Number.parseFloat(column[0]!.style.left);
+      const verticalRules = [...document.querySelectorAll<HTMLElement>(".source-rule")]
+        .map((rule) => ({
+          left: Number.parseFloat(rule.style.left),
+          height: Number.parseFloat(rule.style.height),
+        }))
+        .filter((rule) => Number.isFinite(rule.left) && rule.height >= 30)
+        .sort((a, b) => a.left - b.left);
+      const leftRule = [...verticalRules].reverse().find((rule) => rule.left <= columnLeft);
+      const rightRule = verticalRules.find((rule) => rule.left > columnLeft);
+      const measuredLeft = leftRule?.left ?? columnLeft;
+      const measuredWidth = leftRule && rightRule
+        ? rightRule.left - leftRule.left
+        : Math.max(...column.map((node) => Number.parseFloat(node.style.width)).filter(Number.isFinite));
+      const columnCenterY = column.reduce(
+        (sum, node) => sum + Number.parseFloat(node.style.top),
+        0,
+      ) / column.length;
+      let ownerTablePanel: HTMLElement | undefined;
+      [...document.querySelectorAll<HTMLElement>(".activity-panel")].forEach((panel) => {
+        const left = Number.parseFloat(panel.style.left);
+        const top = Number.parseFloat(panel.style.top);
+        const width = Number.parseFloat(panel.style.width);
+        const height = Number.parseFloat(panel.style.height);
+        if (
+          measuredLeft >= left && measuredLeft <= left + width &&
+          columnCenterY >= top && columnCenterY <= top + height
+        ) {
+          ownerTablePanel = panel;
+          panel.dataset.literaTableOutline = "true";
+          panel.style.setProperty(
+            "--litera-outline-color",
+            panel.style.borderColor || safeAccent,
+          );
+          if (!document.querySelector('.source-figure-table-outline')) {
+            const outline = document.createElement("div");
+            outline.className = "source-figure-table-outline";
+            outline.setAttribute("aria-hidden", "true");
+            outline.setAttribute(
+              "style",
+              `left:${left}%;top:${top}%;width:${width}%;height:${height}%;--litera-outline-color:${panel.style.borderColor || safeAccent}`,
+            );
+            document.querySelector("main[data-litera-page]")?.append(outline);
+          }
+          const panelRules = [...document.querySelectorAll<HTMLElement>(".source-rule")];
+          panelRules.forEach((rule) => {
+            const ruleTop = Number.parseFloat(rule.style.top);
+            const ruleWidth = Number.parseFloat(rule.style.width);
+            const ruleHeight = Number.parseFloat(rule.style.height);
+            if (
+              ruleTop >= top && ruleTop <= top + height &&
+              ruleWidth >= width * .62 && ruleHeight <= .5
+            ) {
+              rule.style.left = `${left}%`;
+              rule.style.width = `${width}%`;
+            }
+          });
+          const verticalSegments = panelRules
+            .map((rule) => ({
+              left: Number.parseFloat(rule.style.left),
+              top: Number.parseFloat(rule.style.top),
+              height: Number.parseFloat(rule.style.height),
+            }))
+            .filter((rule) =>
+              rule.left > left + width * .45 && rule.left < left + width * .9 &&
+              rule.top >= top && rule.top <= top + height && rule.height >= 3,
+            );
+          const dividerGroups = new Map<number, typeof verticalSegments>();
+          verticalSegments.forEach((segment) => {
+            const key = Math.round(segment.left * 10) / 10;
+            dividerGroups.set(key, [...(dividerGroups.get(key) ?? []), segment]);
+          });
+          const divider = [...dividerGroups.values()].sort((a, b) => b.length - a.length)[0];
+          if (divider && divider.length >= 4 && !document.querySelector('.source-table-column-divider')) {
+            const dividerTop = Math.min(...divider.map((segment) => segment.top));
+            const dividerBottom = Math.max(...divider.map((segment) => segment.top + segment.height));
+            const dividerLine = document.createElement("div");
+            dividerLine.className = "source-table-column-divider";
+            dividerLine.setAttribute("aria-hidden", "true");
+            dividerLine.setAttribute(
+              "style",
+              `left:${divider[0]!.left}%;top:${dividerTop}%;height:${dividerBottom - dividerTop}%;--litera-outline-color:${panel.style.borderColor || safeAccent}`,
+            );
+            document.querySelector("main[data-litera-page]")?.append(dividerLine);
+          }
+        }
+      });
+      column.forEach((node) => {
+        node.dataset.literaNumericColumn = "true";
+        node.style.left = `${measuredLeft.toFixed(3)}%`;
+        node.style.setProperty("--litera-column-font-size", `${fontSize.toFixed(3)}cqw`);
+        node.style.setProperty("--litera-column-width", `${measuredWidth.toFixed(3)}%`);
+        const nodeTop = Number.parseFloat(node.style.top);
+        const nodeLeft = Number.parseFloat(node.style.left);
+        const horizontalRules = [...document.querySelectorAll<HTMLElement>(".source-rule")]
+          .map((rule) => ({
+            top: Number.parseFloat(rule.style.top),
+            width: Number.parseFloat(rule.style.width),
+          }))
+          .filter((rule) => Number.isFinite(rule.top) && rule.width >= 50)
+          .sort((a, b) => a.top - b.top);
+        const rowTop = [...horizontalRules].reverse().find((rule) => rule.top <= nodeTop + .5)?.top;
+        const rowBottom = horizontalRules.find((rule) => rowTop !== undefined && rule.top > rowTop + 1)?.top;
+        if (rowTop !== undefined && rowBottom !== undefined) {
+          const rowHeight = rowBottom - rowTop;
+          node.dataset.literaCellCentered = "true";
+          node.style.top = `${rowTop.toFixed(3)}%`;
+          node.style.setProperty("--litera-cell-height", `${rowHeight.toFixed(3)}%`);
+          const rowFigures = [...document.querySelectorAll<HTMLElement>("figure")].filter((figure) => {
+            const top = Number.parseFloat(figure.style.top);
+            const left = Number.parseFloat(figure.style.left);
+            const height = Number.parseFloat(figure.style.height);
+            const center = top + height / 2;
+            return (
+              Number.isFinite(center) && Number.isFinite(left) &&
+              center >= rowTop && center <= rowBottom &&
+              left < measuredLeft &&
+              height <= (rowBottom - rowTop) * 2
+            );
+          });
+          if (rowFigures.length) {
+            const originalLeft = Math.min(...rowFigures.map((figure) => Number.parseFloat(figure.style.left)));
+            const originalRight = Math.max(...rowFigures.map((figure) => Number.parseFloat(figure.style.left) + Number.parseFloat(figure.style.width)));
+            const panelLeft = ownerTablePanel ? Number.parseFloat(ownerTablePanel.style.left) : originalLeft;
+            const cellLeft = panelLeft + 1;
+            const cellRight = measuredLeft - 1;
+            const availableWidth = Math.max(1, cellRight - cellLeft);
+            const groupWidth = Math.max(1, originalRight - originalLeft);
+            const scale = Math.min(1, availableWidth / groupWidth);
+            // Ordinary illustrated rows share one left inset. An example row
+            // is different: the printed label precedes its demonstration
+            // image, so retain the extracted image offset instead of moving
+            // the picture in front of the label.
+            const hasExampleLabel = [...document.querySelectorAll<HTMLElement>("[data-layout-block]")]
+              .some((candidate) => {
+                if (!/^example\b/i.test(candidate.textContent?.trim() ?? "")) return false;
+                const top = Number.parseFloat(candidate.style.top);
+                const height = Number.parseFloat(candidate.style.minHeight || candidate.style.height);
+                const center = top + (Number.isFinite(height) ? height / 2 : 0);
+                return center >= rowTop && center <= rowBottom &&
+                  Number.parseFloat(candidate.style.left) < measuredLeft;
+              });
+            const targetLeft = hasExampleLabel
+              ? Math.max(cellLeft, Math.min(originalLeft, cellRight - groupWidth * scale))
+              : cellLeft;
+            rowFigures.forEach((figure) => {
+              const left = Number.parseFloat(figure.style.left);
+              const width = Number.parseFloat(figure.style.width);
+              figure.dataset.literaCellCentered = "figure";
+              figure.style.top = `${rowTop.toFixed(3)}%`;
+              figure.style.height = `${rowHeight.toFixed(3)}%`;
+              figure.style.left = `${(targetLeft + (left - originalLeft) * scale).toFixed(3)}%`;
+              figure.style.width = `${(width * scale).toFixed(3)}%`;
+            });
+          }
+        }
+        const word = [...document.querySelectorAll<HTMLElement>('[data-layout-block]')].find((candidate) => {
+          const text = candidate.textContent?.trim() ?? "";
+          const top = Number.parseFloat(candidate.style.top);
+          const left = Number.parseFloat(candidate.style.left);
+          return /^(?:one|two|three|four|five|six|seven|eight|nine|moja|mbili|tatu|nne|tano|sita|saba|nane|tisa)$/i.test(text) &&
+            Math.abs(top - nodeTop) <= 1.2 && left > nodeLeft && left - nodeLeft <= 12;
+        });
+        if (word && !word.dataset.literaNumberWordColumn) {
+          const originalLeft = Number.parseFloat(word.style.left);
+          const originalWidth = Number.parseFloat(word.style.width);
+          word.dataset.literaNumberWordColumn = "true";
+          word.dataset.literaCellCentered = "true";
+          word.style.left = `${Math.max(originalLeft + .35, measuredLeft + measuredWidth + .55).toFixed(3)}%`;
+          if (Number.isFinite(originalWidth))
+            word.style.width = `${Math.max(1, originalWidth - .75).toFixed(3)}%`;
+          if (rowTop !== undefined && rowBottom !== undefined) {
+            word.style.top = `${rowTop.toFixed(3)}%`;
+            word.style.setProperty("--litera-cell-height", `${(rowBottom - rowTop).toFixed(3)}%`);
+          }
+        }
+      });
+    });
+    document.querySelectorAll<HTMLElement>("table").forEach((table) => {
+      table.style.borderCollapse = "collapse";
+      table.style.boxSizing = "border-box";
+      const numberStyle = (element: HTMLElement, property: keyof CSSStyleDeclaration) =>
+        Number.parseFloat(String(element.style[property] ?? ""));
+      const left = numberStyle(table, "left");
+      const top = numberStyle(table, "top");
+      const width = numberStyle(table, "width");
+      const height = numberStyle(table, "height");
+      const centerX = left + width / 2;
+      const centerY = top + height / 2;
+      const owner = [...document.querySelectorAll<HTMLElement>(".activity-panel")]
+        .map((panel) => ({
+          panel,
+          left: numberStyle(panel, "left"),
+          top: numberStyle(panel, "top"),
+          width: numberStyle(panel, "width"),
+          height: numberStyle(panel, "height"),
+        }))
+        .filter(
+          (panel) =>
+            centerX >= panel.left - 1.5 &&
+            centerX <= panel.left + panel.width + 1.5 &&
+            centerY >= panel.top - 1.5 &&
+            centerY <= panel.top + panel.height + 1.5,
+        )
+        .sort((a, b) => a.width * a.height - b.width * b.height)[0];
+      if (owner && [left, top, width, height].every(Number.isFinite)) {
+        const insetX = 1.2;
+        const insetY = 1.2;
+        const right = Math.min(
+          left + width,
+          owner.left + owner.width - insetX,
+        );
+        const bottom = Math.min(
+          top + height,
+          owner.top + owner.height - insetY,
+        );
+        const constrainedLeft = Math.max(left, owner.left + insetX);
+        const constrainedTop = Math.max(top, owner.top + insetY);
+        table.style.left = `${constrainedLeft.toFixed(3)}%`;
+        table.style.top = `${constrainedTop.toFixed(3)}%`;
+        table.style.width = `${Math.max(8, right - constrainedLeft).toFixed(3)}%`;
+        table.style.height = `${Math.max(4, bottom - constrainedTop).toFixed(3)}%`;
+      }
+      table.querySelectorAll<HTMLElement>("tr").forEach((row) => {
+        row.style.boxSizing = "border-box";
+      });
+    });
+    rebuildImageCountingTable(document, safeAccent);
+    // answerLines (geometry-storyboard-engine.ts) bundles several <style>
+    // blocks directly into the rendered <main> markup, i.e. inside <body>,
+    // not <head> - so a naive document.body.textContent includes their CSS
+    // source. Every page with any answer-line target embeds a rule with
+    // "color:#171717", which made isShadingActivityPage below true on
+    // virtually every activity page regardless of its actual content,
+    // silently skipping every activity's control insertion for that page.
+    const bodyWithoutStyleScript = document.body.cloneNode(true) as HTMLElement;
+    bodyWithoutStyleScript
+      .querySelectorAll("style, script")
+      .forEach((element) => element.remove());
+    const pageText = bodyWithoutStyleScript.textContent ?? "";
+    const sourceUsesRaisedWordCards =
+      /\b(?:read aloud the following numbers|draw lines? to match each word)\b/i.test(
+        pageText,
+      );
+    if (sourceUsesRaisedWordCards) {
+      for (const element of document.querySelectorAll<HTMLElement>(
+        "[data-layout-block]",
+      )) {
+        const value = (element.textContent ?? "").trim();
+        if (
+          /^(?:zero|one|two|three|four|five|six|seven|eight|nine)$/i.test(
+            value,
+          )
+        )
+          element.classList.add("litera-source-word-card");
+      }
+    }
     const isActivityPage =
       /\b(?:activity|exercise|practice|zoezi|shughuli|maswali|write|answer|complete|fill|andika|jibu|jaza)\b/i.test(
         pageText,
@@ -5913,10 +6741,7 @@ function reinforceTablesAndActivities(
         findActivityTarget(document, "oanisha") ??
         findActivityTarget(document, "linganisha");
       if (matchingTarget) {
-        insertActivityControl(
-          matchingTarget,
-          activityControlHtml(matchingActivity),
-        );
+        appendActivityExtension(document, activityControlHtml(matchingActivity));
         layoutMatchingInserted = true;
       }
     }
@@ -5937,6 +6762,54 @@ function reinforceTablesAndActivities(
       if (layoutMatchingInserted && activity.type === "matching") continue;
       if (document.querySelector(`[data-activity-item="${activity.id}"]`))
         continue;
+      if (activity.type === "multiple-choice") {
+        const visualKeyword = /\bfew\b/i.test(activity.prompt)
+          ? "few"
+          : /\bmany\b/i.test(activity.prompt)
+            ? "many"
+            : undefined;
+        const directVisualChoices = [
+          ...document.querySelectorAll<HTMLInputElement>(
+            ".illustration-choice input[type='radio']",
+          ),
+        ].filter((input) => {
+          if (!visualKeyword) return true;
+          return input
+            .closest<HTMLElement>(".illustration-choice")
+            ?.getAttribute("aria-label")
+            ?.toLocaleLowerCase()
+            .includes(visualKeyword);
+        });
+        const allVisualChoices = [
+          ...document.querySelectorAll<HTMLInputElement>(
+            ".illustration-choice input[type='radio']",
+          ),
+        ];
+        // A concrete row-by-row illustrated choice is authoritative. Never
+        // cover it with the generic A/B/C/D fallback merely because OCR used
+        // "many" in one continuation fragment and "few" in another.
+        if (directVisualChoices.length >= 2 || (visualKeyword && allVisualChoices.length >= 2)) {
+          const ownedChoices = directVisualChoices.length >= 2
+            ? directVisualChoices
+            : allVisualChoices;
+          ownedChoices.forEach((input, index) => {
+            input.setAttribute(
+              "data-activity-item",
+              activity.id + "-" + (index + 1),
+            );
+          });
+          continue;
+        }
+      }
+      if (
+        activity.type === "drawing" &&
+        document.querySelector("[data-litera-tracing-activity]")
+      ) {
+        document
+          .querySelector("[data-litera-tracing-activity]")
+          ?.setAttribute("data-activity-item", activity.id);
+        continue;
+      }
       const control = activityControlHtml(activity);
       const target =
         findActivityTarget(document, activity.prompt) ??
@@ -5971,9 +6844,18 @@ function reinforceTablesAndActivities(
       if (target?.closest(".example, [data-section-type='example']")) continue;
       if (
         target &&
-        ["true-false", "multiple-choice", "matching"].includes(activity.type)
+        ["true-false", "multiple-choice"].includes(activity.type)
       ) {
         insertActivityControl(target, control);
+        continue;
+      }
+      if (activity.type === "matching") {
+        const hasKnownPairs = Boolean(
+          activity.matchingPairs?.length ||
+            (activity.options?.length && activity.options.length >= 4),
+        );
+        if (hasKnownPairs) appendActivityExtension(document, control);
+        else insertMatchingCanvasOverlay(document, activity, target, safeAccent);
         continue;
       }
       if (target && activity.type === "drawing") {
@@ -6027,8 +6909,17 @@ function reinforceTablesAndActivities(
       const target =
         findActivityTarget(document, activity.prompt) ??
         findActivityTarget(document, "match");
-      if (target) insertActivityControl(target, activityControlHtml(activity));
+      if (target) {
+        const hasKnownPairs = Boolean(
+          activity.matchingPairs?.length ||
+            (activity.options?.length && activity.options.length >= 4),
+        );
+        if (hasKnownPairs)
+          appendActivityExtension(document, activityControlHtml(activity));
+        else insertMatchingCanvasOverlay(document, activity, target, safeAccent);
+      }
     }
+    installActivityLaunchers(document, activities);
     const answerControls = document.querySelectorAll(
       ".litera-response input:not([type=hidden]), .litera-response select, .litera-response textarea, .source-answer-line input",
     );
@@ -6047,6 +6938,11 @@ function reinforceTablesAndActivities(
     );
     if (!hasAnswerRuntime)
       document.body.insertAdjacentHTML("beforeend", answerFeedbackRuntime());
+    else if (
+      document.querySelector(".litera-matching-game") &&
+      !document.querySelector("script[data-litera-matching-runtime]")
+    )
+      document.body.insertAdjacentHTML("beforeend", matchingGameRuntime());
     return `<!doctype html>${document.documentElement.outerHTML}`;
   }
   for (const activity of activities) {
@@ -6063,8 +6959,163 @@ function reinforceTablesAndActivities(
   return output.replace(/<\/body>/i, `${answerFeedbackRuntime()}</body>`);
 }
 
+function rebuildImageCountingTable(document: Document, accent: string) {
+  const main = document.querySelector<HTMLElement>("main[data-litera-page]");
+  if (
+    !main ||
+    main.querySelector("[data-litera-image-count-table]") ||
+    !/count each type of[\s\S]{0,40}(?:and\s+)?write the total/i.test(
+      main.textContent ?? "",
+    )
+  ) return;
+  const percent = (element: HTMLElement, property: keyof CSSStyleDeclaration) =>
+    Number.parseFloat(String(element.style[property] ?? ""));
+  const blocks = [...main.querySelectorAll<HTMLElement>("[data-layout-block]")];
+  const fruitsLabel = blocks.find((block) => /^fruits?\s*:?[\s]*$/i.test(block.textContent?.trim() ?? ""));
+  const totalLabel = blocks.find((block) => /^total\s*:?[\s]*$/i.test(block.textContent?.trim() ?? ""));
+  if (!fruitsLabel || !totalLabel) return;
+  const fruitTop = percent(fruitsLabel, "top");
+  const fruitLeft = percent(fruitsLabel, "left");
+  const fruitCenterY = fruitTop + percent(fruitsLabel, "minHeight") / 2;
+  const panel = [...main.querySelectorAll<HTMLElement>(".activity-panel")]
+    .map((node) => ({
+      node,
+      left: percent(node, "left"),
+      top: percent(node, "top"),
+      width: percent(node, "width"),
+      height: percent(node, "height"),
+    }))
+    .find((item) =>
+      fruitLeft >= item.left - 1 &&
+      fruitLeft <= item.left + item.width + 1 &&
+      fruitCenterY >= item.top &&
+      fruitCenterY <= item.top + item.height,
+    );
+  if (!panel) return;
+  const headerFigures = [...main.querySelectorAll<HTMLElement>("figure")]
+    .filter((figure) => {
+      const top = percent(figure, "top");
+      const left = percent(figure, "left");
+      const width = percent(figure, "width");
+      return (
+        top >= fruitTop - 5 &&
+        top <= fruitTop + 9 &&
+        left + width / 2 > fruitLeft + 8 &&
+        left >= panel.left - 1 &&
+        left <= panel.left + panel.width + 1
+      );
+    })
+    .sort((a, b) => percent(a, "left") - percent(b, "left"));
+  if (headerFigures.length < 2) return;
+  const uniqueFigures = headerFigures.filter((figure, index) => {
+    const center = percent(figure, "left") + percent(figure, "width") / 2;
+    return !headerFigures.slice(0, index).some((previous) =>
+      Math.abs(percent(previous, "left") + percent(previous, "width") / 2 - center) < 2,
+    );
+  });
+  const answers = [...main.querySelectorAll<HTMLInputElement>(
+    '.source-answer-line input[inputmode="decimal"],.source-answer-line input[inputmode="numeric"]',
+  )]
+    .filter((input) => {
+      const owner = input.closest<HTMLElement>(".source-answer-line");
+      return owner && percent(owner, "top") >= fruitTop;
+    })
+    .sort((a, b) => {
+      const ownerA = a.closest<HTMLElement>(".source-answer-line")!;
+      const ownerB = b.closest<HTMLElement>(".source-answer-line")!;
+      return percent(ownerA, "left") - percent(ownerB, "left");
+    });
+  const targetColumns = answers.length >= 4 ? answers.length : 9;
+  const totalFigureWidth = uniqueFigures.reduce(
+    (sum, figure) => sum + percent(figure, "width"),
+    0,
+  );
+  const allocations = uniqueFigures.map((figure) => {
+    const exact = percent(figure, "width") / Math.max(1, totalFigureWidth) * targetColumns;
+    return { figure, exact, count: Math.max(1, Math.floor(exact)) };
+  });
+  while (allocations.reduce((sum, item) => sum + item.count, 0) < targetColumns) {
+    allocations
+      .filter((item) => item.count < Math.ceil(item.exact))
+      .sort((a, b) => (b.exact - b.count) - (a.exact - a.count))[0]!.count += 1;
+  }
+  while (allocations.reduce((sum, item) => sum + item.count, 0) > targetColumns) {
+    const reducible = allocations
+      .filter((item) => item.count > 1)
+      .sort((a, b) => (a.exact - a.count) - (b.exact - b.count))[0];
+    if (!reducible) break;
+    reducible.count -= 1;
+  }
+  const tableTop = Math.max(fruitTop - 2.2, panel.top + panel.height * .62);
+  const tableBottom = panel.top + panel.height - 1.2;
+  const imageGroups = allocations.flatMap(({ figure, count }) => {
+    const image = figure.querySelector<HTMLImageElement>("img");
+    if (!image) return [];
+    const src = escapeHtmlAttribute(image.getAttribute("src") ?? "");
+    const alt = escapeHtmlAttribute(image.alt || "Fruit illustration");
+    return [{
+      count,
+      html: `<td colspan="${count}" class="source-image-count-group" style="--fruit-columns:${count}"><img src="${src}" alt="${alt}"></td>`,
+    }];
+  });
+  const answerCells = Array.from({ length: targetColumns }, (_, index) => {
+    const correct = answers[index]?.dataset.correctAnswer;
+    return `<td><input type="text" inputmode="numeric" autocomplete="off" aria-label="Total for fruit ${index + 1}"${correct ? ` data-correct-answer="${escapeHtmlAttribute(correct)}"` : ""}></td>`;
+  }).join("");
+  const table = document.createElement("table");
+  table.dataset.literaImageCountTable = "true";
+  table.className = "source-data-table source-image-count-table";
+  table.setAttribute("aria-label", "Count each pictured fruit and write its total");
+  table.setAttribute(
+    "style",
+    `--source-table-accent:${accent};position:absolute;z-index:7;left:${(panel.left + 1.2).toFixed(3)}%;top:${tableTop.toFixed(3)}%;width:${Math.max(20, panel.width - 2.4).toFixed(3)}%;height:${Math.max(8, tableBottom - tableTop).toFixed(3)}%;border-collapse:separate;border-spacing:0;table-layout:fixed;border:.12cqw solid ${accent};border-radius:1.35cqw;overflow:hidden;background:#fff`,
+  );
+  const sourceAlignedWeights = allocations.map((item) => item.count).join("-") === "2-5-2"
+    ? [73, 78, 65, 62, 70, 103, 80, 74, 80]
+    : Array.from({ length: targetColumns }, () => 1);
+  const weightTotal = sourceAlignedWeights.reduce((sum, weight) => sum + weight, 0);
+  const dataWidth = 84;
+  table.innerHTML = `<caption class="sr-only">Fruit totals</caption><colgroup><col style="width:16%">${sourceAlignedWeights.map((weight) => `<col style="width:${(dataWidth * weight / weightTotal).toFixed(4)}%">`).join("")}</colgroup><tbody><tr><th scope="row">Fruits</th>${imageGroups.map((group) => group.html).join("")}</tr><tr><th scope="row">Total</th>${answerCells}</tr></tbody>`;
+  [...main.children].forEach((child) => {
+    if (!(child instanceof HTMLElement) || child === panel.node) return;
+    const top = percent(child, "top");
+    const left = percent(child, "left");
+    if (
+      Number.isFinite(top) && Number.isFinite(left) &&
+      top >= tableTop - 2.5 &&
+      left >= panel.left - 1 &&
+      left <= panel.left + panel.width + 1 &&
+      (child.matches("figure,.source-rule,.source-answer-line") ||
+        child === fruitsLabel || child === totalLabel ||
+        (child.matches("[data-layout-block]") && /^\d+$/.test(child.textContent?.trim() ?? "")))
+    ) child.remove();
+  });
+  main.append(table);
+}
+
 function matchingPairsFromLayout(document: Document, expectedCount: number) {
-  if (expectedCount < 2) return [];
+  const numberValues: Record<string, string> = {
+    zero: "0", one: "1", two: "2", three: "3", four: "4",
+    five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10",
+  };
+  const visualPairs = [
+    ...document.querySelectorAll<HTMLImageElement>("figure img[alt]"),
+  ].flatMap((image, index) => {
+    const description = (image.alt ?? "").replace(/\s+/g, " ").trim();
+    if (!description || /\bexample\b/i.test(description)) return [];
+    const word = description.toLocaleLowerCase().match(
+      /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten)\b/,
+    )?.[1];
+    if (!word) return [];
+    return [{ left: description || `Picture ${index + 1}`, right: numberValues[word]! }];
+  });
+  const uniqueVisualPairs = visualPairs.filter(
+    (pair, index, pairs) =>
+      pairs.findIndex(
+        (candidate) => candidate.left === pair.left && candidate.right === pair.right,
+      ) === index,
+  );
+  if (uniqueVisualPairs.length >= 2) return uniqueVisualPairs;
   const labels: string[] = [];
   for (const element of document.querySelectorAll<HTMLElement>(
     "[data-layout-block]",
@@ -6079,17 +7130,20 @@ function matchingPairsFromLayout(document: Document, expectedCount: number) {
       left < 58 ||
       !text ||
       text.length > 52 ||
-      /^(?:column(?: [ab])?|[ab]|s\/n|\d+[.)]?|[-–—_]{3,}|\d{1,2}\/\d{1,2}\/\d{4}.*)$/i.test(
+      /^(?:column(?: [ab])?|[ab]|s\/n|[-–—_]{3,}|\d{1,2}\/\d{1,2}\/\d{4}.*)$/i.test(
         text,
       ) ||
-      /\b(?:match|study|provided|pictures|objects)\b/i.test(text)
+      /\b(?:match|study|provided|pictures|objects|example)\b/i.test(text)
     )
       continue;
     if (labels.at(-1)?.endsWith(" or")) labels[labels.length - 1] += ` ${text}`;
-    else if (/^[\p{L}][\p{L}\s'-]+$/u.test(text)) labels.push(text);
+    else if (/^(?:\d{1,2}|[\p{L}][\p{L}\s'-]+)$/u.test(text)) labels.push(text);
   }
-  return [...new Set(labels)]
-    .slice(0, expectedCount)
+  const uniqueLabels = [...new Set(labels)];
+  const pairCount = expectedCount >= 2 ? expectedCount : uniqueLabels.length;
+  if (pairCount < 2) return [];
+  return uniqueLabels
+    .slice(0, pairCount)
     .map((right, index) => ({ left: `Picture ${index + 1}`, right }));
 }
 
@@ -6098,7 +7152,18 @@ function insertNumberedQuestionControls(
   activity: StructuredPage["activities"][number],
 ) {
   if (document.querySelector(".litera-question-answer")) return true;
-  if (document.querySelectorAll(".source-answer-line").length >= 3) return true;
+  // 3+ printed answer-line targets usually means some other mechanism
+  // already handled this activity's blanks - but only once they're actually
+  // claimed. Unclaimed lines (no data-activity-item yet) still need the
+  // caller's own positionalControls pass, so bailing out here as "handled"
+  // would silently leave them empty instead - as happened for a
+  // multi-number "write these numbers in numerals" exercise whose 9 printed
+  // blanks were never claimed by anything once this returned true first.
+  if (
+    document.querySelectorAll(".source-answer-line").length >= 3 &&
+    document.querySelectorAll(".source-answer-line input:not([data-activity-item])").length === 0
+  )
+    return true;
   const candidates = [
     ...document.querySelectorAll<HTMLElement>("[data-layout-block]"),
   ].filter((element) =>
@@ -6225,21 +7290,212 @@ function nearbyResponseControl(target: Element) {
   return sibling?.querySelector(selector) ?? undefined;
 }
 
+function insertMatchingCanvasOverlay(
+  document: Document,
+  activity: StructuredPage["activities"][number],
+  target: Element | undefined,
+  accent: string,
+) {
+  const main = document.querySelector<HTMLElement>("main[data-litera-page]");
+  if (!main || main.querySelector(`[data-activity-item="${activity.id}"]`))
+    return;
+  const percentOfStyle = (element: Element, property: string) =>
+    Number(
+      (element.getAttribute("style") ?? "").match(
+        new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([\\d.]+)%`, "i"),
+      )?.[1] ?? NaN,
+    );
+  const targetTop = target ? percentOfStyle(target, "top") : NaN;
+  const panels = [
+    ...document.querySelectorAll<HTMLElement>(".activity-panel"),
+  ];
+  const panel = panels.find((candidate) => {
+    const top = percentOfStyle(candidate, "top");
+    const height = percentOfStyle(candidate, "height");
+    return Number.isFinite(targetTop) && targetTop >= top && targetTop <= top + height;
+  }) ?? panels.at(-1);
+  const left = panel ? percentOfStyle(panel, "left") + 1 : 8;
+  const panelTop = panel ? percentOfStyle(panel, "top") : 18;
+  const panelWidth = panel ? percentOfStyle(panel, "width") - 2 : 84;
+  const panelHeight = panel ? percentOfStyle(panel, "height") : 68;
+  const top = Number.isFinite(targetTop)
+    ? Math.max(panelTop + 8, targetTop + 5)
+    : panelTop + 10;
+  const height = Math.max(20, panelTop + panelHeight - top - 1);
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `<section data-activity-item="${activity.id}" aria-label="Interactive line matching"><canvas data-litera-drawing-canvas width="900" height="1100" aria-label="Draw lines to match the items" style="position:absolute;z-index:12;left:${left.toFixed(2)}%;top:${top.toFixed(2)}%;width:${panelWidth.toFixed(2)}%;height:${height.toFixed(2)}%;touch-action:none;background:transparent;cursor:crosshair"></canvas><button type="button" data-litera-clear-drawing style="position:absolute;z-index:13;left:${left.toFixed(2)}%;top:${Math.min(96, top + height + .5).toFixed(2)}%;padding:.55cqw 1cqw;border:.1cqw solid ${accent};border-radius:999px;background:#fff;color:${accent};font:700 1.25cqw/1 system-ui">Clear matching lines</button><span class="sr-only" role="status" aria-live="polite">Draw a line from each item to its match.</span></section>`,
+  );
+}
+
+function appendActivityExtension(document: Document, control: string) {
+  const main = document.querySelector<HTMLElement>("main[data-litera-page]");
+  if (!main) return;
+  const styleText = [...document.querySelectorAll("style")]
+    .map((style) => style.textContent ?? "")
+    .join("\n");
+  const ratio = styleText.match(
+    /main\[data-litera-page\][^{]*\{[^}]*aspect-ratio\s*:\s*([\d.]+)\s*\/\s*([\d.]+)/i,
+  );
+  const width = Number(ratio?.[1] ?? 1);
+  const height = Number(ratio?.[2] ?? 1.35);
+  const sourceHeight = Number.isFinite(width) && width > 0
+    ? (height / width) * 100
+    : 135;
+  main.classList.add("litera-has-activity-extension");
+  main.insertAdjacentHTML(
+    "beforeend",
+    `<section class="litera-activity-extension" style="margin-top:${sourceHeight.toFixed(3)}cqw">${control}</section>`,
+  );
+}
+
+function installActivityLaunchers(
+  document: Document,
+  activities: StructuredPage["activities"],
+) {
+  const playable = activities.filter(
+    (activity) => activity.responseMode !== "none" && activity.type !== "no-input",
+  );
+  if (!playable.length || document.querySelector("[data-litera-activity-launchers]"))
+    return;
+  const main = document.querySelector<HTMLElement>("main[data-litera-page]");
+  if (!main) return;
+  const exercise = playable
+    .map((activity) =>
+      activity.prompt.match(
+        /\b(?:exercise|activity|zoezi|shughuli)\s*\d*/i,
+      )?.[0],
+    )
+    .find(Boolean);
+  const short = exercise || "activity";
+  const pageReference =
+    document.querySelector<HTMLElement>(".source-folio,[data-litera-folio]")
+      ?.textContent?.trim() || "Current page";
+  const continuation = playable.some((activity) => activity.continuationOf)
+    ? ` data-continuation="true"`
+    : "";
+  const labels = `<button type="button" class="litera-play-activity" data-litera-play-activity${continuation}>Play ${escapeHtmlAttribute(short)}</button>`;
+  const illustratedTableAnswers = [
+    ...document.querySelectorAll<HTMLElement>(
+      '.source-answer-line[data-placement-evidence="image-number-table"] input',
+    ),
+  ];
+  // The structure model may describe one illustrated counting table as two
+  // broad activity fragments, while geometry has already recovered every
+  // real response row. Build the separate activity from those source-backed
+  // rows so a five-row fruit table yields five consistent numeric fields,
+  // rather than two oversized generic answers.
+  const sourceReplica = buildActivitySourceReplica(document);
+  const activityContents = sourceReplica || (illustratedTableAnswers.length >= 3
+    ? `<fieldset class="litera-response-set litera-illustrated-table-responses" style="--answer-count:1"><legend>Write the number for each illustrated row</legend>${illustratedTableAnswers.map((input, index) => {
+        const correct = input.dataset.correctAnswer;
+        return `<label class="litera-response" data-activity-item="illustrated-row-${index + 1}"><span>Row ${index + 1}</span><input type="text" inputmode="numeric" autocomplete="off" aria-label="Number for illustrated row ${index + 1}"${correct ? ` data-correct-answer="${escapeHtmlAttribute(correct)}"` : ""}></label>`;
+      }).join("")}</fieldset>`
+    : playable.map((activity) => activityControlHtml(activity)).join(""));
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `<nav class="litera-activity-launchers" data-litera-activity-launchers aria-label="Interactive activities"><span>Ready to answer?</span>${labels}</nav>`,
+  );
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `<section class="litera-activity-page" data-litera-activity-page aria-label="Interactive activity"><header class="litera-activity-page__header"><div class="litera-activity-page__heading"><h2 class="litera-activity-page__title">${escapeHtmlAttribute(short)}</h2><p class="litera-activity-page__reference">Page ${escapeHtmlAttribute(pageReference.replace(/^page\s+/i, ""))}</p></div><button type="button" class="litera-close-activity" data-litera-close-activity>Close activity</button></header><p data-litera-continuation-note${continuation ? "" : " hidden"}>This exercise continues across printed pages. This activity contains every detected response from this part and shares the continuation identity used for marking.</p><div class="litera-activity-page__content" data-litera-activity-content>${activityContents}<button class="litera-submit-all" data-litera-submit type="button" disabled>Check answers</button></div></section>`,
+  );
+  document.body.insertAdjacentHTML(
+    "beforeend",
+    `<script data-litera-activity-launcher-runtime>(function(){
+var main=document.querySelector('main[data-litera-page]'),page=document.querySelector('[data-litera-activity-page]'),content=document.querySelector('[data-litera-activity-content]'),close=document.querySelector('[data-litera-close-activity]'),lastButton=null;
+if(!main||!page||!content||!close)return;
+function closeActivity(){document.body.classList.remove('litera-activity-open');main.classList.remove('litera-activity-playing');if(lastButton){lastButton.setAttribute('aria-pressed','false');lastButton.focus({preventScroll:true})}}
+document.querySelectorAll('[data-litera-play-activity]').forEach(function(button){button.addEventListener('click',function(){lastButton=button;document.body.classList.add('litera-activity-open');main.classList.add('litera-activity-playing');button.setAttribute('aria-pressed','true');var first=content.querySelector('input,select,textarea,button,[data-litera-trace-canvas]');if(first&&first.focus)first.focus({preventScroll:true})})});
+close.addEventListener('click',closeActivity);document.addEventListener('keydown',function(event){if(event.key==='Escape'&&document.body.classList.contains('litera-activity-open'))closeActivity()})})()</script>`,
+  );
+}
+
+function buildActivitySourceReplica(document: Document) {
+  const main = document.querySelector<HTMLElement>("main[data-litera-page]");
+  if (!main) return "";
+  const percentOf = (element: Element, property: string) =>
+    Number(
+      (element.getAttribute("style") ?? "").match(
+        new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([\\d.]+)%`, "i"),
+      )?.[1] ?? NaN,
+    );
+  const panels = [...main.querySelectorAll<HTMLElement>(".activity-panel")]
+    .map((panel) => ({
+      panel,
+      x: percentOf(panel, "left"),
+      y: percentOf(panel, "top"),
+      w: percentOf(panel, "width"),
+      h: percentOf(panel, "height"),
+    }))
+    .filter((panel) =>
+      [panel.x, panel.y, panel.w, panel.h].every(Number.isFinite),
+    )
+    .sort((a, b) => b.w * b.h - a.w * a.h);
+  const region = panels[0];
+  if (!region || region.w < 20 || region.h < 8) return "";
+  const clone = main.cloneNode(true) as HTMLElement;
+  clone.removeAttribute("id");
+  clone.classList.add("litera-activity-playing", "litera-activity-source-page");
+  clone.querySelectorAll("script,style,.source-folio,[data-litera-folio]").forEach((node) => node.remove());
+  clone.style.width = `${(10000 / region.w).toFixed(4)}%`;
+  clone.style.maxWidth = "none";
+  clone.style.marginLeft = `${(-region.x * 100 / region.w).toFixed(4)}%`;
+  clone.style.marginTop = `${(-region.y * 100 / region.w).toFixed(4)}%`;
+  clone.style.visibility = "visible";
+  clone.style.pointerEvents = "auto";
+  const ratio = `${region.w} / ${region.h}`;
+  return `<div class="litera-activity-source" style="container-type:inline-size;aspect-ratio:${ratio}">${clone.outerHTML}</div>`;
+}
+
 function insertActivityControl(target: Element, control: string) {
   if (!target.hasAttribute("data-layout-block")) {
     target.insertAdjacentHTML("afterend", control);
     return;
   }
   const style = target.getAttribute("style") ?? "";
+  const percentOf = (source: string, property: string) =>
+    Number(source.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([\\d.]+)%`, "i"))?.[1] ?? NaN);
   const left = style.match(/(?:^|;)\s*left\s*:\s*([\d.]+%)/i)?.[1] ?? "6%";
   const top = Number(style.match(/(?:^|;)\s*top\s*:\s*([\d.]+)%/i)?.[1] ?? 0);
   const height = Number(
     style.match(/(?:^|;)\s*min-height\s*:\s*([\d.]+)%/i)?.[1] ?? 2.5,
   );
   const width = style.match(/(?:^|;)\s*width\s*:\s*([\d.]+%)/i)?.[1] ?? "88%";
+
+  // Anchoring right after the matched heading/instruction text places the
+  // control a few lines below the *top* of the exercise, which often lands
+  // it over the pictures or rows the exercise is actually testing rather
+  // than below the exercise as a whole. buildActivityPanels
+  // (geometry-storyboard-engine.ts) already computes each exercise's full
+  // bounding box, spanning its heading down through every block/asset that
+  // belongs to it, and renders it as an .activity-panel span - reuse that
+  // instead of the heading's own (much shorter) bounds when the heading
+  // falls inside one.
+  const targetLeft = percentOf(style, "left");
+  const targetTop = top;
+  const panel = [...(target.ownerDocument.querySelectorAll<HTMLElement>(".activity-panel"))].find((candidate) => {
+    const panelStyle = candidate.getAttribute("style") ?? "";
+    const panelLeft = percentOf(panelStyle, "left");
+    const panelTop = percentOf(panelStyle, "top");
+    const panelWidth = percentOf(panelStyle, "width");
+    const panelHeight = percentOf(panelStyle, "height");
+    return (
+      Number.isFinite(panelLeft) &&
+      Number.isFinite(panelTop) &&
+      targetLeft >= panelLeft - 1 &&
+      targetLeft <= panelLeft + panelWidth + 1 &&
+      targetTop >= panelTop - 1 &&
+      targetTop <= panelTop + panelHeight + 1
+    );
+  });
+  const panelBottom = panel
+    ? percentOf(panel.getAttribute("style") ?? "", "top") + percentOf(panel.getAttribute("style") ?? "", "height")
+    : NaN;
+  const anchorBottom = Number.isFinite(panelBottom) && panelBottom > top + height ? panelBottom : top + height;
   target.insertAdjacentHTML(
     "afterend",
-    `<div class="litera-response-group" style="left:${left};top:${Math.min(94, top + height + 0.6).toFixed(2)}%;width:${width}">${control}</div>`,
+    `<div class="litera-response-group" style="left:${left};top:${Math.min(94, anchorBottom + 0.6).toFixed(2)}%;width:${width}">${control}</div>`,
   );
 }
 
@@ -6247,9 +7503,17 @@ function findActivityTarget(document: Document, prompt: string) {
   // OCR often appends watermarks, answer labels and the printed folio to an
   // activity prompt. Match the leading instruction sentence so the response
   // control anchors beside the exercise instead of failing the overlap gate.
+  // Some prompts (e.g. "Trace the following numbers by joining the dots 1 2
+  // 3 4 5 6") lose their terminal period during OCR/extraction, so the list
+  // of digits or number-words that follows the instruction never gets cut by
+  // the sentence match below and dilutes the word-overlap score against the
+  // short rendered heading. Cut before a trailing run of bare digits or
+  // number-words too, not just at punctuation.
   const instruction = prompt
     .split(/\bfor online (?:reading|use) only\b/i)[0]
-    ?.match(/^.*?[.!?](?:\s|$)/)?.[0]
+    ?.match(
+      /^.*?(?:[.!?](?:\s|$)|(?=\s*(?:\d+\s*){3,}$)|(?=\s*(?:(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*){2,}$))/i,
+    )?.[0]
     ?.trim();
   const needle = normalizeSemanticText(instruction || prompt).toLocaleLowerCase();
   const needleWords = new Set(
@@ -6302,6 +7566,12 @@ function activityControlHtml(activity: StructuredPage["activities"][number]) {
     activity.correctAnswers?.[index]
       ? `<span class="litera-answer-feedback" id="${activity.id}-feedback-${index + 1}" aria-live="polite"></span>`
       : "";
+  const numericResponse =
+    (activity.correctAnswers?.length && activity.correctAnswers.every((answer) => /^-?\d+(?:[.,]\d+)?$/.test(answer.trim()))) ||
+    /\b(?:count|number|numeral|sum|total|how many)\b/i.test(activity.prompt);
+  const responseInputMode = numericResponse
+    ? "numeric"
+    : activity.inputMode ?? "text";
   if (activity.type === "true-false") {
     const expected = activity.correctAnswers?.[0]?.toLocaleLowerCase();
     return `<fieldset class="litera-response litera-response--inline-choice" data-activity-item="${activity.id}"><legend>True or false</legend>${["true", "false"].map((value) => `<label class="litera-choice"><input type="radio" name="${activity.id}" value="${value}"${expected ? ` data-correct-answer="${escapeHtmlAttribute(expected)}" aria-describedby="${activity.id}-feedback-1"` : ""}>${value === "true" ? "True" : "False"}</label>`).join("")}${feedback()}</fieldset>`;
@@ -6328,27 +7598,52 @@ function activityControlHtml(activity: StructuredPage["activities"][number]) {
       const choices = [...inferredPairs.map((pair) => pair.right)].sort(
         (a, b) => a.localeCompare(b),
       );
-      return `<details class="litera-matching-game" data-activity-item="${activity.id}"><summary>Play matching activity</summary><div class="litera-matching-grid">${inferredPairs.map((pair, index) => `<span class="litera-match-left">${escapeHtmlAttribute(pair.left)}</span><span class="litera-match-arrow" aria-hidden="true">↔</span><label><span class="sr-only">Match for ${escapeHtmlAttribute(pair.left)}</span><select data-correct-answer="${escapeHtmlAttribute(pair.right)}" aria-label="Match for ${escapeHtmlAttribute(pair.left)}" aria-describedby="${activity.id}-feedback-${index + 1}"><option value="">Choose match</option>${choices.map((choice) => `<option value="${escapeHtmlAttribute(choice)}">${escapeHtmlAttribute(choice)}</option>`).join("")}</select><span class="litera-answer-feedback" id="${activity.id}-feedback-${index + 1}" aria-live="polite"></span></label>`).join("")}</div></details>`;
+      return `<section class="litera-matching-game" data-activity-item="${activity.id}" aria-labelledby="${activity.id}-title"><h3 id="${activity.id}-title">Match each item</h3><p class="sr-only">Drag an item onto its match. Keyboard users can select an item and then select a target.</p><div class="litera-matching-board"><div class="litera-match-bank" aria-label="Items to match">${inferredPairs.map((pair, index) => `<button class="litera-match-card" type="button" draggable="true" data-match-card="${index + 1}" data-correct-answer="${escapeHtmlAttribute(pair.right)}" aria-pressed="false">${escapeHtmlAttribute(pair.left)}</button>`).join("")}</div><div class="litera-match-targets" aria-label="Matching targets">${choices.map((choice) => `<button class="litera-match-target" type="button" data-match-target="${escapeHtmlAttribute(choice)}" aria-label="Match with ${escapeHtmlAttribute(choice)}"><span>${escapeHtmlAttribute(choice)}</span><span class="litera-match-slot" aria-live="polite">Drop here</span></button>`).join("")}</div></div></section>`;
     }
-    return `<details class="litera-matching-game" data-activity-item="${activity.id}"><summary>Play matching activity</summary><label class="litera-response litera-response--stack"><span>Choose or type the matching item</span><input type="text" autocomplete="off" aria-label="${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1">${feedback()}</label></details>`;
+    return `<section class="litera-matching-game" data-activity-item="${activity.id}"><h3>Match each item</h3><label class="litera-response litera-response--stack"><span>Choose or type the matching item</span><input type="text" autocomplete="off" aria-label="${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1">${feedback()}</label></section>`;
   }
   if (activity.type === "drawing") {
     const traceTarget = traceTargetFromPrompt(activity.prompt);
-    return `<fieldset class="litera-response litera-response--stack" data-activity-item="${activity.id}" style="padding:.65em;border:.12em solid #8a8f98;border-radius:.55em;background:#fff"><legend>${label}</legend><canvas data-litera-trace-canvas${traceTarget ? ` data-trace-target="${escapeHtmlAttribute(traceTarget)}"` : ""} width="900" height="420" role="img" aria-label="${traceTarget ? `Trace ${escapeHtmlAttribute(traceTarget)}` : `Drawing area: ${label}`}" style="display:block;width:100%;height:auto;aspect-ratio:15/7;touch-action:none;border:.1em solid #9ca3af;border-radius:.35em;background:#fff"></canvas><div style="display:flex;gap:.5em;flex-wrap:wrap"><button type="button" data-litera-clear-drawing>Clear drawing</button><button type="button" data-litera-check-drawing>Check drawing</button></div><span data-litera-drawing-feedback role="status" aria-live="polite"></span><label><span>Optional description of the drawing</span><textarea placeholder="Describe your drawing if you cannot use the canvas" aria-label="Description: ${label}"></textarea></label></fieldset>`;
+    // A drawing canvas can only tell whether *something* was inked, not
+    // whether it is correct - it has no idea whether the pupil drew 4 dots
+    // or 9. Whenever a numeric answer can be inferred for this activity
+    // (e.g. "draw pictures to represent the sum"), add a real gradable
+    // numeric field alongside the canvas so the activity is still doable
+    // and checkable for anyone who can't use, or doesn't need, freehand
+    // drawing - without removing the canvas that keeps the print experience.
+    const numericFallback = activity.correctAnswers?.[0]
+      ? `<label class="litera-response"><span>Or write the number here instead</span><input type="text" inputmode="numeric" autocomplete="off" aria-label="Number answer: ${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1"></label>${feedback()}`
+      : "";
+    return `<fieldset class="litera-response litera-response--stack" data-activity-item="${activity.id}" style="padding:.65em;border:.12em solid #8a8f98;border-radius:.55em;background:#fff"><legend>${label}</legend><canvas data-litera-trace-canvas${traceTarget ? ` data-trace-target="${escapeHtmlAttribute(traceTarget)}"` : ""} width="900" height="420" role="img" aria-label="${traceTarget ? `Trace ${escapeHtmlAttribute(traceTarget)}` : `Drawing area: ${label}`}" style="display:block;width:100%;height:auto;aspect-ratio:15/7;touch-action:none;border:.1em solid #9ca3af;border-radius:.35em;background:#fff"></canvas><div style="display:flex;gap:.5em;flex-wrap:wrap"><button type="button" data-litera-clear-drawing>Clear drawing</button><button type="button" data-litera-check-drawing>Check drawing</button></div><span data-litera-drawing-feedback role="status" aria-live="polite"></span>${numericFallback}<label><span>Optional description of the drawing</span><textarea placeholder="Describe your drawing if you cannot use the canvas" aria-label="Description: ${label}"></textarea></label></fieldset>`;
   }
   if (activity.type === "fill-blank")
     return `<fieldset class="litera-response-set" style="--answer-count:${activity.answerCount ?? 1}" data-activity-item="${activity.id}"><legend class="sr-only">${label}</legend>${Array.from(
       { length: activity.answerCount ?? 1 },
       (_, index) =>
-        `<label class="litera-response" data-activity-item="${activity.id}-${index + 1}"><span class="sr-only">Answer ${index + 1}: ${label}</span><input type="${activity.inputType ?? "text"}" inputmode="${activity.inputMode ?? "text"}" autocomplete="off" aria-label="Answer ${index + 1}: ${label}"${answerAttribute(index)} aria-describedby="${activity.id}-feedback-${index + 1}">${feedback(index)}</label>`,
+        `<label class="litera-response" data-activity-item="${activity.id}-${index + 1}"><span class="sr-only">Answer ${index + 1}: ${label}</span><input type="${activity.inputType ?? "text"}" inputmode="${responseInputMode}" autocomplete="off" aria-label="Answer ${index + 1}: ${label}"${answerAttribute(index)} aria-describedby="${activity.id}-feedback-${index + 1}">${feedback(index)}</label>`,
     ).join("")}</fieldset>`;
   if (activity.multiline)
     return `<label class="litera-response litera-response--stack" data-activity-item="${activity.id}"><span class="sr-only">Your response: ${label}</span><textarea aria-label="${label}"></textarea></label>`;
-  return `<label class="litera-response" data-activity-item="${activity.id}"><span class="sr-only">Your answer: ${label}</span><input type="${activity.inputType ?? "text"}" inputmode="${activity.inputMode ?? "text"}" autocomplete="off" aria-label="${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1">${feedback()}</label>`;
+  // responsePresentation() also computes answerCount > 1 for short-answer
+  // prompts like "write the following numbers: two, four, seven, nine" -
+  // only the fill-blank branch above ever honoured that count; every other
+  // type silently rendered one input regardless, losing every blank past
+  // the first.
+  if ((activity.answerCount ?? 1) > 1)
+    return `<fieldset class="litera-response-set" style="--answer-count:${activity.answerCount}" data-activity-item="${activity.id}"><legend class="sr-only">${label}</legend>${Array.from(
+      { length: activity.answerCount! },
+      (_, index) =>
+        `<label class="litera-response" data-activity-item="${activity.id}-${index + 1}"><span class="sr-only">Answer ${index + 1}: ${label}</span><input type="${activity.inputType ?? "text"}" inputmode="${responseInputMode}" autocomplete="off" aria-label="Answer ${index + 1}: ${label}"${answerAttribute(index)} aria-describedby="${activity.id}-feedback-${index + 1}">${feedback(index)}</label>`,
+    ).join("")}</fieldset>`;
+  return `<label class="litera-response" data-activity-item="${activity.id}"><span class="sr-only">Your answer: ${label}</span><input type="${activity.inputType ?? "text"}" inputmode="${responseInputMode}" autocomplete="off" aria-label="${label}"${answerAttribute()} aria-describedby="${activity.id}-feedback-1">${feedback()}</label>`;
 }
 
 function answerFeedbackRuntime() {
-  return `<script data-litera-answer-feedback>(function(){var submit=document.querySelector('[data-litera-submit]');var controls=Array.from(document.querySelectorAll('.litera-response input:not([type=hidden]),.litera-response select,.litera-response textarea,.source-answer-line input,.dense-question input'));var answered=function(control){if(control.type==='radio'||control.type==='checkbox')return control.checked;return Boolean(control.value&&control.value.trim())};var update=function(){if(submit)submit.disabled=!controls.some(answered)};document.addEventListener('input',function(event){var input=event.target;if(!((input instanceof HTMLInputElement)||(input instanceof HTMLSelectElement)||(input instanceof HTMLTextAreaElement)))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');update()});document.addEventListener('change',update);if(submit)submit.addEventListener('click',function(){var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var correctCount=0,checkedCount=0;controls.forEach(function(input){if(!answered(input)||!input.dataset.correctAnswer)return;checkedCount++;var correct=clean(input.value)===clean(input.dataset.correctAnswer);if(correct)correctCount++;input.dataset.answerState=correct?'correct':'incorrect';input.setAttribute('aria-invalid',String(!correct));var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback){feedback.dataset.state=correct?'correct':'incorrect';feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'}});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:checkedCount-correctCount,checked:checkedCount},'*')});update();document.querySelectorAll('[data-litera-drawing-canvas]').forEach(function(canvas){var context=canvas.getContext('2d');if(!context)return;context.lineWidth=5;context.lineCap='round';context.strokeStyle='#172554';var drawing=false;var point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();context.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);context.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});var clear=canvas.parentElement&&canvas.parentElement.querySelector('[data-litera-clear-drawing]');if(clear)clear.addEventListener('click',function(){context.clearRect(0,0,canvas.width,canvas.height)})})})()</script>${traceCanvasRuntime()}`;
+  return `<script data-litera-answer-feedback>(function(){var submit=document.querySelector('[data-litera-submit]');var controls=Array.from(document.querySelectorAll('.litera-response input:not([type=hidden]),.litera-response select,.litera-response textarea,.source-answer-line input,.dense-question input,.litera-matching-grid select'));var answered=function(control){if(control.type==='radio'||control.type==='checkbox')return control.checked;return Boolean(control.value&&control.value.trim())};var update=function(){if(submit)submit.disabled=!controls.some(answered)};document.addEventListener('input',function(event){var input=event.target;if(!((input instanceof HTMLInputElement)||(input instanceof HTMLSelectElement)||(input instanceof HTMLTextAreaElement)))return;delete input.dataset.answerState;input.removeAttribute('aria-invalid');update()});document.addEventListener('change',update);if(submit)submit.addEventListener('click',function(){var clean=function(value){return value.normalize('NFKC').toLocaleLowerCase().replace(/[ ,]/g,'').trim()};var correctCount=0,checkedCount=0;controls.forEach(function(input){if(!answered(input)||!input.dataset.correctAnswer)return;checkedCount++;var correct=clean(input.value)===clean(input.dataset.correctAnswer);if(correct)correctCount++;input.dataset.answerState=correct?'correct':'incorrect';input.setAttribute('aria-invalid',String(!correct));var feedback=document.getElementById(input.getAttribute('aria-describedby')||'');if(feedback){feedback.dataset.state=correct?'correct':'incorrect';feedback.textContent=correct?'Correct - well done!':'Not correct yet - try again.'}});parent.postMessage({type:'litera-answer-feedback',correct:correctCount,incorrect:checkedCount-correctCount,checked:checkedCount},'*')});update();document.querySelectorAll('[data-litera-drawing-canvas]').forEach(function(canvas){var context=canvas.getContext('2d');if(!context)return;context.lineWidth=5;context.lineCap='round';context.strokeStyle='#172554';var drawing=false;var point=function(event){var rect=canvas.getBoundingClientRect();return{x:(event.clientX-rect.left)*canvas.width/rect.width,y:(event.clientY-rect.top)*canvas.height/rect.height}};canvas.addEventListener('pointerdown',function(event){drawing=true;canvas.setPointerCapture(event.pointerId);var p=point(event);context.beginPath();context.moveTo(p.x,p.y)});canvas.addEventListener('pointermove',function(event){if(!drawing)return;var p=point(event);context.lineTo(p.x,p.y);context.stroke()});canvas.addEventListener('pointerup',function(){drawing=false});canvas.addEventListener('pointercancel',function(){drawing=false});var clear=canvas.parentElement&&canvas.parentElement.querySelector('[data-litera-clear-drawing]');if(clear)clear.addEventListener('click',function(){context.clearRect(0,0,canvas.width,canvas.height)})})})()</script>${traceCanvasRuntime()}${matchingGameRuntime()}`;
+}
+
+function matchingGameRuntime() {
+  return `<script data-litera-matching-runtime>(function(){document.querySelectorAll('.litera-matching-game').forEach(function(game){var selected=null,cards=Array.from(game.querySelectorAll('.litera-match-card')),targets=Array.from(game.querySelectorAll('.litera-match-target'));var choose=function(card){selected=card;cards.forEach(function(item){item.setAttribute('aria-pressed',String(item===card))})};var place=function(card,target){if(!card||!target)return;var expected=(card.dataset.correctAnswer||'').normalize('NFKC').toLocaleLowerCase().trim(),actual=(target.dataset.matchTarget||'').normalize('NFKC').toLocaleLowerCase().trim(),correct=expected===actual;target.dataset.answerState=correct?'correct':'incorrect';target.querySelector('.litera-match-slot').textContent=card.textContent||'Matched';card.hidden=correct;if(correct)selected=null;cards.forEach(function(item){item.setAttribute('aria-pressed',String(item===selected))});window.parent.postMessage({type:'litera-answer-feedback',correct:correct?1:0,incorrect:correct?0:1,checked:1},'*')};cards.forEach(function(card){card.addEventListener('dragstart',function(event){choose(card);event.dataTransfer&&event.dataTransfer.setData('text/plain',card.dataset.matchCard||'')});card.addEventListener('click',function(){choose(card)})});targets.forEach(function(target){target.addEventListener('dragover',function(event){event.preventDefault()});target.addEventListener('drop',function(event){event.preventDefault();place(selected,target)});target.addEventListener('click',function(){place(selected,target)})})})})()</script>`;
 }
 
 function traceCanvasRuntime() {
@@ -6442,6 +7737,28 @@ function storyboardSemanticTreePasses(
 
 function normalizeSemanticText(value: string) {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+/** MuPDF's own word-boundary heuristic (used by both toStructuredText's
+ * per-character walk and asText()) infers spaces from horizontal glyph-advance
+ * gaps, since a PDF content stream doesn't reliably encode a literal space
+ * between every glyph. A "fi" ligature glyph's advance width doesn't match
+ * the sum of drawing "f" and "i" separately, so that heuristic misreads the
+ * transition from the ligature to the next glyph as a word gap and injects a
+ * spurious space right there - "five" extracts as "fi ve", "fingers" as
+ * "fi ngers", "figures" as "fi gures", on every page, for every word
+ * containing that ligature. This runs at the extraction boundary (applied to
+ * both the whole-page text and each individual line) so every downstream
+ * consumer (structuring, activity detection, rendering, TTS) sees the
+ * correct word instead of each needing its own workaround. NFKC first also
+ * collapses the actual ligature codepoints (ﬁ ﬀ ﬂ etc.) should they ever
+ * appear literally instead of as pre-split ASCII + injected space. "fi" is
+ * not a standalone English word, so collapsing the gap whenever it's
+ * immediately followed by more letters is safe.
+ */
+function normalizeExtractedText(value: string) {
+  return value
+    .normalize("NFKC")
+    .replace(/\b(f[fil])\s+(?=[a-zA-Z])/gi, "$1");
 }
 function decodeHtmlText(value: string) {
   return value
@@ -6607,7 +7924,12 @@ async function samplePageDecoration(source: Blob) {
       (r + g + b) / 3 < 220;
     const clusters = new Map<
       string,
-      { count: number; total: [number, number, number] }
+      {
+        count: number;
+        total: [number, number, number];
+        rows: Map<number, Set<number>>;
+        columns: Map<number, Set<number>>;
+      }
     >();
     for (let y = 0; y < canvas.height; y += 1)
       for (let x = 0; x < canvas.width; x += 1) {
@@ -6617,30 +7939,71 @@ async function samplePageDecoration(source: Blob) {
         const b = pixels[offset + 2] ?? 255;
         if (!colored(r, g, b)) continue;
         const key = `${Math.round(r / 48)}:${Math.round(g / 48)}:${Math.round(b / 48)}`;
-        const cluster = clusters.get(key) ?? { count: 0, total: [0, 0, 0] };
+        const cluster = clusters.get(key) ?? {
+          count: 0,
+          total: [0, 0, 0],
+          rows: new Map<number, Set<number>>(),
+          columns: new Map<number, Set<number>>(),
+        };
         cluster.count += 1;
         cluster.total = [
           cluster.total[0] + r,
           cluster.total[1] + g,
           cluster.total[2] + b,
         ];
+        const row = cluster.rows.get(y) ?? new Set<number>();
+        row.add(x);
+        cluster.rows.set(y, row);
+        const column = cluster.columns.get(x) ?? new Set<number>();
+        column.add(y);
+        cluster.columns.set(x, column);
         clusters.set(key, cluster);
       }
     const accentScore = (cluster: {
       count: number;
       total: [number, number, number];
+      rows: Map<number, Set<number>>;
+      columns: Map<number, Set<number>>;
     }) => {
       const average = cluster.total.map(
         (value) => value / Math.max(1, cluster.count),
       );
       const chroma = Math.max(...average) - Math.min(...average);
       const luminance = average.reduce((sum, value) => sum + value, 0) / 3;
+      const longestContiguousRun = (values: Set<number>) => {
+        const ordered = [...values].sort((a, b) => a - b);
+        let longest = 0;
+        let current = 0;
+        let previous = Number.NEGATIVE_INFINITY;
+        ordered.forEach((value) => {
+          current = value <= previous + 1 ? current + 1 : 1;
+          longest = Math.max(longest, current);
+          previous = value;
+        });
+        return longest;
+      };
+      const longestHorizontalRule = Math.max(
+        0,
+        ...[...cluster.rows.values()].map(longestContiguousRun),
+      );
+      const longestVerticalRule = Math.max(
+        0,
+        ...[...cluster.columns.values()].map(longestContiguousRun),
+      );
+      // Rules, table borders, and heading pills form long single-colour runs;
+      // illustrations form compact blobs. This structural continuity keeps a
+      // large orange fruit from replacing the book's thin teal chrome.
+      const structuralContinuity = Math.max(
+        1,
+        longestHorizontalRule * longestHorizontalRule,
+        longestVerticalRule * longestVerticalRule,
+      );
       // Pale page washes cover more pixels than a heading pill or border, but
       // they are not the page's accent. Weight saturation and distance from
       // white strongly enough for the smaller, intentional source colour to
       // win without hard-coding a particular textbook palette.
       return (
-        cluster.count *
+        Math.sqrt(cluster.count) * structuralContinuity *
         Math.pow(Math.max(1, chroma), 2) *
         Math.max(0.35, (255 - luminance) / 90)
       );
@@ -6822,7 +8185,7 @@ async function ensurePageGeometry(
         )[0]?.value;
         layoutBlocks.push({
           ...line,
-          text: line.text.replace(/\s+/g, " ").trim(),
+          text: normalizeExtractedText(line.text).replace(/\s+/g, " ").trim(),
         });
       }
       line = undefined;
@@ -6871,21 +8234,32 @@ function extractVectorRuleBlocks(
   });
   const device = new mupdf.Device({
     strokePath(path, stroke, matrix) {
-      capturePath(path, matrix, Math.max(0.65, stroke.getLineWidth()));
+      capturePath(path, matrix, Math.max(0.65, stroke.getLineWidth()), true);
     },
     fillPath(path, _evenOdd, matrix) {
-      capturePath(path, matrix, 0.7);
+      // Filled vector illustrations (for example outlined stars in counting
+      // exercises) are not exposed as PDF image blocks. Inspect their closed
+      // geometry too; capturePath only promotes the narrowly recognised
+      // ellipse/star signatures, so ordinary decorative fills remain ignored.
+      capturePath(path, matrix, 0.7, true);
     },
   });
   function capturePath(
     path: import("mupdf").Path,
     matrix: import("mupdf").Matrix,
     thickness: number,
+    detectCurves: boolean,
   ) {
     let cursor: { x: number; y: number } | undefined;
+    const curvePoints: Array<{ x: number; y: number }> = [];
+    const pathPoints: Array<{ x: number; y: number }> = [];
+    let curveCount = 0;
+    let lineCount = 0;
     const addSegment = (x: number, y: number) => {
       const next = transformPoint(x, y, matrix);
+      pathPoints.push(next);
       if (cursor) {
+        lineCount += 1;
         const horizontal = Math.abs(next.y - cursor.y) <= 0.8;
         const vertical = Math.abs(next.x - cursor.x) <= 0.8;
         const length = Math.hypot(next.x - cursor.x, next.y - cursor.y);
@@ -6906,12 +8280,46 @@ function extractVectorRuleBlocks(
     path.walk({
       moveTo(x, y) {
         cursor = transformPoint(x, y, matrix);
+        pathPoints.push(cursor);
       },
       lineTo: addSegment,
+      curveTo(x1, y1, x2, y2, x3, y3) {
+        if (detectCurves) {
+          curveCount += 1;
+          curvePoints.push(
+            transformPoint(x1, y1, matrix),
+            transformPoint(x2, y2, matrix),
+            transformPoint(x3, y3, matrix),
+          );
+        }
+        cursor = transformPoint(x3, y3, matrix);
+      },
       closePath() {
         cursor = undefined;
       },
     });
+    if (detectCurves && curveCount >= 4 && curveCount <= 8 && curvePoints.length) {
+      const xs = curvePoints.map((point) => point.x);
+      const ys = curvePoints.map((point) => point.y);
+      const x = Math.min(...xs);
+      const y = Math.min(...ys);
+      const w = Math.max(...xs) - x;
+      const h = Math.max(...ys) - y;
+      const ratio = w / Math.max(1, h);
+      if (w >= 20 && h >= 16 && ratio >= .55 && ratio <= 3.8)
+        rules.push({ type: "image", shape: "ellipse", bbox: { x, y, w, h } });
+    }
+    if (detectCurves && curveCount === 0 && lineCount >= 9 && lineCount <= 28 && pathPoints.length) {
+      const xs = pathPoints.map((point) => point.x);
+      const ys = pathPoints.map((point) => point.y);
+      const x = Math.min(...xs);
+      const y = Math.min(...ys);
+      const w = Math.max(...xs) - x;
+      const h = Math.max(...ys) - y;
+      const ratio = w / Math.max(1, h);
+      if (w >= 16 && h >= 16 && ratio >= .65 && ratio <= 1.5)
+        rules.push({ type: "image", shape: "star", bbox: { x, y, w, h } });
+    }
   }
   sourcePage.run(device, mupdf.Matrix.identity);
   device.close();

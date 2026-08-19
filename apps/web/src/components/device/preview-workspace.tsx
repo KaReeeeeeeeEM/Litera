@@ -47,6 +47,7 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   const [contentsOpen, setContentsOpen] = useState(false);
   const [contentsQuery, setContentsQuery] = useState("");
   const [bottomBarDark, setBottomBarDark] = useState(true);
+  const [showActivityBars, setShowActivityBars] = useState(true);
   const [playbackRate, setPlaybackRate] = useState("1");
   const [volume, setVolume] = useState("1");
   const [language, setLanguage] = useState(book.metadata?.languageCode || "source");
@@ -80,23 +81,43 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     () => {
       const catalogEntries = buildTextCatalog(book);
       const order = new Map(catalogEntries.map((entry, entryIndex) => [entry.id, entryIndex]));
-      return (book.speechEntries ?? []).filter(
+      const ordered = (book.speechEntries ?? []).filter(
         (entry) =>
           entry.pageNumber === page?.pageNumber &&
           entry.language === effectiveLanguage,
       ).sort((a, b) => (order.get(a.textId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.textId) ?? Number.MAX_SAFE_INTEGER));
+      const seenTargets = new Set<string>();
+      const seenImageNarration = new Set<string>();
+      return ordered.filter((entry) => {
+        const key = `${entry.textId}\u0000${normalizeReaderText(entry.inputText ?? "")}`;
+        if (seenTargets.has(key)) return false;
+        seenTargets.add(key);
+        const sourceBlock = page?.blocks.find(
+          (block) =>
+            block.id === entry.textId ||
+            (entry.textId.startsWith("caption-") &&
+              block.assetId === entry.textId.slice("caption-".length)),
+        );
+        if (sourceBlock?.kind === "image" || entry.textId.startsWith("caption-")) {
+          const narration = normalizeReaderText(entry.inputText ?? "");
+          if (narration && seenImageNarration.has(narration)) return false;
+          if (narration) seenImageNarration.add(narration);
+        }
+        return true;
+      });
     },
     [book, book.speechEntries, effectiveLanguage, page?.pageNumber],
   );
   const speechRef = useRef(speech);
   const readerContents = useMemo(() => {
-    if (book.tableOfContents?.length) return book.tableOfContents;
     const seen = new Set<string>();
-    return pages.flatMap((candidate, pageIndex) =>
-      candidate.blocks.flatMap((block) => {
+    const chapters = pages.flatMap((candidate, pageIndex) =>
+      /class=["'][^"']*digital-toc\b/.test(candidate.html)
+        ? []
+        : candidate.blocks.flatMap((block) => {
         if (
           block.hidden ||
-          !["chapter", "title", "section"].includes(block.visualRole ?? "")
+          block.visualRole !== "chapter"
         )
           return [];
         const title = block.content.replace(/\s+/g, " ").trim();
@@ -107,12 +128,21 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
           {
             title,
             pageNumber: candidate.digitalPageNumber ?? pageIndex + 1,
-            level: block.visualRole === "chapter" ? 1 : 2,
+            level: 1,
           },
         ];
-      }),
+          }),
     );
-  }, [book.tableOfContents, pages]);
+    if (chapters.length) return chapters;
+    return pages.flatMap((candidate, pageIndex) => {
+      const title = candidate.title?.replace(/\s+/g, " ").trim();
+      if (!title || /^(?:page\s+)?\d+$/i.test(title)) return [];
+      const key = title.toLocaleLowerCase();
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ title, pageNumber: candidate.digitalPageNumber ?? pageIndex + 1, level: 1 }];
+    });
+  }, [pages]);
   useEffect(() => {
     speechRef.current = speech;
   }, [speech]);
@@ -158,28 +188,42 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   const targetFor = useCallback((entry: SpeechEntry) => {
     const document = iframe.current?.contentDocument;
     if (!document) return undefined;
-    const escaped = CSS.escape(entry.textId);
-    const sourceBlock = page?.blocks.find((block) => block.id === entry.textId);
-    const targetIds = readerTargetIds(entry.textId, sourceBlock?.assetId);
-    const assetSelector = targetIds.slice(1).map((id) => `,[data-asset-id="${CSS.escape(id)}"]`).join("");
-    const direct = document.querySelector<HTMLElement>(
-      `[data-id="${escaped}"],[data-block-id="${escaped}"],[data-asset-id="${escaped}"]${assetSelector}`,
+    const captionAssetId = entry.textId.startsWith("caption-")
+      ? entry.textId.slice("caption-".length)
+      : undefined;
+    const sourceBlock = page?.blocks.find(
+      (block) => block.id === entry.textId || Boolean(captionAssetId && block.assetId === captionAssetId),
     );
-    if (direct) return direct;
+    const imageNarration = sourceBlock?.kind === "image" || Boolean(captionAssetId);
+    const targetIds = readerTargetIds(entry.textId, sourceBlock?.assetId ?? captionAssetId);
+    const directSelector = targetIds.flatMap((id) => {
+      const escaped = CSS.escape(id);
+      return [`[data-id="${escaped}"]`, `[data-block-id="${escaped}"]`, `[data-asset-id="${escaped}"]`];
+    }).join(",");
+    const direct = directSelector
+      ? [...document.querySelectorAll<HTMLElement>(directSelector)].find((element) =>
+          imageNarration
+            ? element.tagName === "FIGURE" || Boolean(element.closest("figure"))
+            : element.tagName !== "FIGURE" && !element.closest("figure"),
+        )
+      : undefined;
+    if (direct)
+      return imageNarration
+        ? (direct.closest<HTMLElement>("figure") ?? direct)
+        : direct;
     const needle = normalizeReaderText(entry.inputText ?? "");
     if (!needle) return undefined;
-    return [...document.querySelectorAll<HTMLElement>(
-      "[data-layout-block],h1,h2,h3,h4,p,li,figure,figcaption",
-    )].find((element) => {
+    const selector = imageNarration
+      ? "figure"
+      : "[data-layout-block],h1,h2,h3,h4,p,li";
+    return [...document.querySelectorAll<HTMLElement>(selector)].find((element) => {
       const candidate = normalizeReaderText(
         element.tagName === "FIGURE"
           ? element.querySelector("figcaption")?.textContent ||
               element.querySelector("img")?.getAttribute("alt") || ""
           : element.textContent ?? "",
       );
-      return candidate === needle ||
-        (candidate.length > 18 && needle.length > 18 &&
-          (candidate.includes(needle) || needle.includes(candidate)));
+      return candidate === needle || readerTextSimilarity(candidate, needle) >= 0.92;
     });
   }, [page?.blocks]);
 
@@ -187,6 +231,11 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
     clearHighlight();
     const target = targetFor(entry);
     if (!target) return;
+    if (target.tagName !== "FIGURE") {
+      const spokenText = normalizeReaderText(entry.inputText ?? "");
+      const renderedText = normalizeReaderText(target.textContent ?? "");
+      if (readerTextSimilarity(renderedText, spokenText) < 0.78) return;
+    }
     target.dataset.literaReaderHighlight = "sentence";
     if (highlightMode !== "word" || target.tagName === "FIGURE") return;
     if (!originals.current.has(target)) originals.current.set(target, target.innerHTML);
@@ -227,6 +276,13 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
       entry.words.map((word) => word.word),
       renderedWords.map((word) => word.textContent ?? ""),
     );
+    const alignmentConfidence = alignment.filter((index) => index >= 0).length /
+      Math.max(1, alignment.length);
+    if (alignmentConfidence < 0.72) {
+      target.removeAttribute("data-litera-reader-highlight");
+      target.querySelectorAll(".litera-spoken-word.is-active").forEach((word) => word.classList.remove("is-active"));
+      return;
+    }
     const wordIndex = alignment[spokenIndex] ?? -1;
     target.querySelectorAll(".litera-spoken-word.is-active").forEach((word) => word.classList.remove("is-active"));
     if (wordIndex >= 0)
@@ -267,7 +323,12 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
       if (!player.paused && !player.ended) highlightFrame.current = requestAnimationFrame(paintHighlight);
     };
     player.onplay = paintHighlight;
-    player.onpause = () => { if (highlightFrame.current !== undefined) cancelAnimationFrame(highlightFrame.current); };
+    // HTMLMediaElement's pause event fires asynchronously, so pausing this
+    // clip to advance to the next one can deliver this callback *after* the
+    // next clip's own paintHighlight has already stored its frame id in the
+    // same shared ref - canceling the new clip's highlight loop instead of
+    // this (already-stopped) one. Only act if this player is still current.
+    player.onpause = () => { if (audio.current === player && highlightFrame.current !== undefined) cancelAnimationFrame(highlightFrame.current); };
     player.onended = () => playEntryRef.current(entryIndex + 1, session);
     player.onerror = () => playEntryRef.current(entryIndex + 1, session);
     audio.current = player;
@@ -341,13 +402,22 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
 
   function prepareFrame() {
     const document = iframe.current?.contentDocument;
-    if (!document || document.getElementById("litera-reader-highlight-style")) return;
+    if (!document) return;
+    document.body.classList.toggle("litera-hide-activity-bars", !showActivityBars);
+    if (document.getElementById("litera-reader-highlight-style")) return;
     const style = document.createElement("style");
     style.id = "litera-reader-highlight-style";
     style.textContent = `[data-litera-reader-highlight="sentence"]{background:#fde68a!important;box-shadow:0 0 0 .18em #fde68a;border-radius:.14em}figure[data-litera-reader-highlight="sentence"]{outline:.35cqw solid #facc15;outline-offset:.25cqw}[data-litera-reader-highlight="word"] .litera-spoken-word.is-active{background:#fde047!important;box-shadow:0 0 0 .12em #fde047;border-radius:.12em}`;
     document.head.append(style);
     setFrameRevision((value) => value + 1);
   }
+
+  useEffect(() => {
+    iframe.current?.contentDocument?.body.classList.toggle(
+      "litera-hide-activity-bars",
+      !showActivityBars,
+    );
+  }, [frameRevision, showActivityBars]);
 
   if (!page)
     return <Card className="mt-6 p-12 text-center text-muted-foreground">Storyboard pages are required before Preview is available.</Card>;
@@ -362,6 +432,9 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
   const normalizedContentsQuery = contentsQuery.trim().toLocaleLowerCase();
   const filteredContents = readerContents.filter((item) =>
     !normalizedContentsQuery || item.title.toLocaleLowerCase().includes(normalizedContentsQuery),
+  );
+  const activeNarrationText = normalizeReaderText(
+    speech[activeSpeechIndex]?.inputText ?? "",
   );
   const panelTheme = bottomBarDark
     ? "border-zinc-700 bg-zinc-900 text-zinc-100 [&_[data-slot=select-trigger]]:border-zinc-700 [&_[data-slot=select-trigger]]:bg-zinc-800 [&_[data-slot=select-trigger]]:text-zinc-100"
@@ -395,7 +468,7 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
             <div className={`border-b p-4 text-base font-semibold ${bottomBarDark ? "border-zinc-800" : ""}`}>Contents</div>
             <div className="relative px-4"><Search className="pointer-events-none absolute left-7 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search contents" onChange={(event) => setContentsQuery(event.target.value)} placeholder="Search" className={`pl-9 ${bottomBarDark ? "border-zinc-700 bg-zinc-800 text-zinc-100 placeholder:text-zinc-500" : ""}`} value={contentsQuery} /></div>
             <Tabs className="min-h-0 px-4 pb-4" defaultValue="contents"><TabsList className={bottomBarDark ? "bg-zinc-800" : ""}><TabsTrigger className={bottomBarDark ? "text-zinc-300 data-[state=active]:bg-zinc-700 data-[state=active]:text-white" : ""} value="contents">Contents</TabsTrigger><TabsTrigger className={bottomBarDark ? "text-zinc-300 data-[state=active]:bg-zinc-700 data-[state=active]:text-white" : ""} value="pages">Page list</TabsTrigger></TabsList>
-              <TabsContent className="max-h-[52dvh] overflow-auto pt-2" value="contents"><div className="flex flex-col gap-1">{filteredContents.map((item) => { const target = pages.findIndex((candidate) => (candidate.digitalPageNumber ?? candidate.pageNumber) === item.pageNumber); return <Button className="w-full justify-start" disabled={target < 0} key={`${item.pageNumber}-${item.title}`} onClick={() => { if (target >= 0) changePage(target); setContentsOpen(false); }} size="sm" variant="ghost"><span className={`min-w-0 flex-1 truncate text-left ${item.level === 1 ? "font-semibold text-violet-400" : ""}`} style={{ paddingInlineStart: `${Math.max(0, item.level - 1) * 0.75}rem` }}>{item.title}</span><span className="tabular-nums text-muted-foreground">{item.pageNumber}</span></Button>; })}</div></TabsContent>
+              <TabsContent className="max-h-[52dvh] overflow-auto pt-2" value="contents"><div className="flex flex-col gap-1">{filteredContents.map((item) => { const target = pages.findIndex((candidate) => (candidate.digitalPageNumber ?? candidate.pageNumber) === item.pageNumber); const normalizedTitle = normalizeReaderText(item.title); const narrated = playing && Boolean(normalizedTitle) && (activeNarrationText.includes(normalizedTitle) || normalizedTitle.includes(activeNarrationText)); return <Button aria-current={narrated ? "true" : undefined} className={`w-full justify-start ${narrated ? bottomBarDark ? "bg-amber-400/20 ring-1 ring-amber-300/60" : "bg-amber-100 ring-1 ring-amber-400" : ""}`} disabled={target < 0} key={`${item.pageNumber}-${item.title}`} onClick={() => { if (target >= 0) changePage(target); setContentsOpen(false); }} size="sm" variant="ghost"><span className={`min-w-0 flex-1 truncate text-left ${item.level === 1 ? "font-semibold" : ""} ${narrated ? "text-amber-300" : ""}`} style={{ paddingInlineStart: `${Math.max(0, item.level - 1) * 0.75}rem` }}>{item.title}</span><span className="tabular-nums text-muted-foreground">{item.pageNumber}</span></Button>; })}</div></TabsContent>
               <TabsContent className="max-h-[52dvh] overflow-auto pt-2" value="pages"><div className="flex flex-col gap-1">{pages.map((candidate, pageIndex) => { const digital = candidate.digitalPageNumber ?? pageIndex + 1; const section = [...readerContents].filter((item) => item.pageNumber <= digital).at(-1)?.title ?? candidate.title; const previousDigital = pages[pageIndex - 1]?.digitalPageNumber ?? pageIndex; const previousSection = pageIndex > 0 ? [...readerContents].filter((item) => item.pageNumber <= previousDigital).at(-1)?.title ?? pages[pageIndex - 1]?.title : undefined; return <div className="grid gap-1" key={candidate.pageNumber}>{section !== previousSection ? <p className={`px-2 pt-3 text-xs font-bold uppercase tracking-wide ${bottomBarDark ? "text-zinc-400" : "text-muted-foreground"}`}>{section}</p> : null}<Button className={`w-full justify-between ${bottomBarDark ? pageIndex === index ? "border-zinc-600 bg-zinc-700 text-white hover:bg-zinc-600" : "border-transparent bg-transparent text-zinc-100 hover:bg-zinc-800" : ""}`} onClick={() => { changePage(pageIndex); setContentsOpen(false); }} size="sm" variant={pageIndex === index ? "secondary" : "ghost"}><span>{digital}{pageIndex === 0 ? " (Cover)" : ""}</span><span className={bottomBarDark ? "text-zinc-400" : "text-muted-foreground"}>Print Page {candidate.pageNumber}</span></Button></div>; })}</div></TabsContent>
             </Tabs>
           </PopoverContent>
@@ -414,8 +487,9 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
             <CirclePlay className={autoplay ? "text-emerald-400" : ""} />
           </Button>
           <Popover><PopoverTrigger asChild><Button aria-label="Glossary" disabled={!book.glossary?.length} size="icon" variant="ghost"><BookOpen /></Button></PopoverTrigger><PopoverContent align="end" className={`w-80 ${panelTheme}`}><p className="mb-2 font-medium">Glossary</p><dl className="flex max-h-64 flex-col gap-3 overflow-auto">{(book.glossary ?? []).map((item) => <div key={item.term}><dt className="font-medium">{item.term}</dt><dd className="text-sm text-muted-foreground">{item.definition}</dd></div>)}</dl></PopoverContent></Popover>
-          <Popover open={playing} onOpenChange={(open) => { if (!open && playing) stopSpeech(); }}><PopoverTrigger asChild><Button aria-label={playing ? "Deactivate text to speech" : "Activate text to speech"} disabled={!speech.length} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button></PopoverTrigger><PopoverContent align="end" className={`w-96 ${panelTheme}`}><div className="grid gap-3"><div className="flex items-center justify-center"><Button aria-label="Previous narration" disabled={activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button><Button aria-label={playing ? "Pause narration" : "Play narration"} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button><Button aria-label="Next narration" disabled={activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button><Button aria-label="Stop narration" onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button></div><div className="grid w-full grid-cols-2 gap-3"><label className="grid min-w-0 gap-1 text-xs"><span>Playback speed</span><Select onValueChange={(value) => { setPlaybackRate(value); if (audio.current) audio.current.playbackRate = Number(value); }} value={playbackRate}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.75">0.75×</SelectItem><SelectItem value="1">Normal</SelectItem><SelectItem value="1.25">1.25×</SelectItem><SelectItem value="1.5">1.5×</SelectItem></SelectContent></Select></label><label className="grid min-w-0 gap-1 text-xs"><span>Volume</span><Select onValueChange={(value) => { setVolume(value); if (audio.current) audio.current.volume = Number(value); }} value={volume}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.5">50%</SelectItem><SelectItem value="0.75">75%</SelectItem><SelectItem value="1">100%</SelectItem></SelectContent></Select></label></div></div></PopoverContent></Popover>
+          <Popover><PopoverTrigger asChild><Button aria-label={playing ? "Expand narration controls" : "Start narration"} disabled={!speech.length} onClick={() => { if (!playing) toggleSpeech(); }} size="icon" variant="ghost">{playing ? <Volume2 className="animate-pulse" /> : <VolumeX />}</Button></PopoverTrigger><PopoverContent align="end" className={`w-96 ${panelTheme}`}><div className="grid gap-3"><div className="flex items-center justify-center"><Button aria-label="Previous narration" disabled={activeSpeechIndex === 0} onClick={() => skipSpeech(-1)} size="icon" variant="ghost"><SkipBack /></Button><Button aria-label={playing ? "Pause narration" : "Play narration"} onClick={toggleSpeech} size="icon" variant="ghost">{playing ? <Pause /> : <Play />}</Button><Button aria-label="Next narration" disabled={activeSpeechIndex >= speech.length - 1} onClick={() => skipSpeech(1)} size="icon" variant="ghost"><SkipForward /></Button><Button aria-label="Stop narration" onClick={stopSpeech} size="icon" variant="ghost"><Square /></Button></div><p className="text-center text-xs text-muted-foreground">Close this panel to minimize it. Narration continues playing.</p><div className="grid w-full grid-cols-2 gap-3"><label className="grid min-w-0 gap-1 text-xs"><span>Playback speed</span><Select onValueChange={(value) => { setPlaybackRate(value); if (audio.current) audio.current.playbackRate = Number(value); }} value={playbackRate}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.75">0.75×</SelectItem><SelectItem value="1">Normal</SelectItem><SelectItem value="1.25">1.25×</SelectItem><SelectItem value="1.5">1.5×</SelectItem></SelectContent></Select></label><label className="grid min-w-0 gap-1 text-xs"><span>Volume</span><Select onValueChange={(value) => { setVolume(value); if (audio.current) audio.current.volume = Number(value); }} value={volume}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="0.5">50%</SelectItem><SelectItem value="0.75">75%</SelectItem><SelectItem value="1">100%</SelectItem></SelectContent></Select></label></div></div></PopoverContent></Popover>
           {book.signVideos?.length ? <Popover><PopoverTrigger asChild><Button aria-label="Sign language" disabled={!pageSignVideos.length} size="icon" variant="ghost"><Hand /></Button></PopoverTrigger><PopoverContent align="end" className={`w-72 ${panelTheme}`}><p className="font-medium">Sign language</p><p className="mt-1 text-sm text-muted-foreground">{pageSignVideos.length ? `${pageSignVideos.length} signed video ${pageSignVideos.length === 1 ? "is" : "are"} mapped to this page.` : "No signed video is mapped to this page."}</p></PopoverContent></Popover> : null}
+          <Button aria-label={showActivityBars ? "Hide activity bars" : "Show activity bars"} aria-pressed={showActivityBars} onClick={() => setShowActivityBars((value) => !value)} size="icon" title={showActivityBars ? "Activity bars shown" : "Activity bars hidden"} variant="ghost"><Hand className={showActivityBars ? "text-emerald-400" : ""} /></Button>
           <Button aria-label={bottomBarDark ? "Use light bottom bar theme" : "Use dark bottom bar theme"} onClick={() => setBottomBarDark((value) => !value)} size="icon" variant="ghost">{bottomBarDark ? <Sun /> : <Moon />}</Button>
           <Popover><PopoverTrigger asChild><Button aria-label="Language" size="icon" variant="ghost"><Languages /></Button></PopoverTrigger><PopoverContent align="end" className={`w-60 ${panelTheme}`}><Select onValueChange={setLanguage} value={language}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}>{languages.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></PopoverContent></Popover>
           <Popover><PopoverTrigger asChild><Button aria-label="Accessibility menu" size="icon" variant="ghost"><Settings /></Button></PopoverTrigger><PopoverContent align="end" className={`grid w-80 gap-4 ${panelTheme}`}><div><p className="font-medium">Settings</p></div><div className="grid gap-3"><p className="text-sm font-medium">Display</p><label className="grid gap-2 text-sm"><span>Page sizing</span><Select onValueChange={(value) => changePageSizingMode(value as PageSizingMode)} value={pageSizingMode}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="fit">Fit to screen</SelectItem><SelectItem value="dynamic">Dynamic</SelectItem></SelectContent></Select></label></div><div className="grid gap-3 border-t border-current/20 pt-3"><p className="text-sm font-medium">Reading</p><label className="flex items-center justify-between gap-4 text-sm"><span>Read pages automatically</span><Checkbox checked={autoplay} onCheckedChange={(checked) => setAutoplay(checked === true)} /></label><label className="grid gap-2 text-sm"><span>Highlighting</span><Select onValueChange={(value) => setHighlightMode(value as HighlightMode)} value={highlightMode}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent className={bottomBarDark ? "border-zinc-700 bg-zinc-900 text-zinc-100" : ""}><SelectItem value="word">Word by word</SelectItem><SelectItem value="sentence">Sentence by sentence</SelectItem></SelectContent></Select></label></div><div className="grid gap-2 border-t border-current/20 pt-3 text-sm"><p className="font-medium">Keyboard shortcuts</p><div className="flex justify-between"><span>Open table of contents</span><kbd>X</kbd></div><div className="flex justify-between"><span>Close panel</span><kbd>Esc</kbd></div></div></PopoverContent></Popover>
@@ -427,6 +501,14 @@ export function PreviewWorkspace({ book }: { book: DeviceBook }) {
 
 function normalizeReaderText(value: string) {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+function readerTextSimilarity(left: string, right: string) {
+  if (!left || !right) return 0;
+  const leftTokens = new Set(left.split(" ").filter(Boolean));
+  const rightTokens = new Set(right.split(" ").filter(Boolean));
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  return intersection / Math.max(leftTokens.size, rightTokens.size, 1);
 }
 
 function fitAspectRatio(availableWidth: number, availableHeight: number, aspectRatio: number) {

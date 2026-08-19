@@ -136,6 +136,13 @@ Use the full page only as context. For every asset ID, state what is visibly dep
 
 Page text: ${(pageText ?? "").replace(/\s+/g, " ").trim().slice(0, 2500)}
 Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=${asset.bounds.y}, width=${asset.bounds.w}, height=${asset.bounds.h}`).join("\n")}`;
+  // A flat 2200-token cap regardless of asset count silently truncates the
+  // response's JSON captions array once a page has enough assets (dense
+  // activity pages routinely have 20-30 small figures) - later entries never
+  // arrive and fall back to a generic caption even though the request
+  // itself succeeded. Scale the budget with how many captions were asked
+  // for, capped well above any real page's asset count.
+  const maxOutputTokens = Math.min(8000, 400 + prepared.length * 110);
   let raw: string;
   if (provider === "openai") {
     if (!keys.openai) throw new Error("Configure an OpenAI vision key before running Captioning.");
@@ -150,7 +157,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     const response = await providerFetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${keys.openai}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4.1-mini", max_output_tokens: 2200, input: [{ role: "user", content }] }),
+      body: JSON.stringify({ model: "gpt-4.1-mini", max_output_tokens: maxOutputTokens, input: [{ role: "user", content }] }),
       signal,
     });
     const payload = await readProviderResponseJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }>; error?: { message?: string } }>(response, "OpenAI");
@@ -169,7 +176,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     const response = await providerFetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": keys.gemini },
-      body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 2200, responseMimeType: "application/json" } }),
+      body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens, responseMimeType: "application/json" } }),
       signal,
     });
     const payload = await readProviderResponseJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; error?: { message?: string } }>(response, "Gemini");
@@ -188,7 +195,7 @@ Assets:\n${prepared.map((asset) => `${asset.id}: bounds x=${asset.bounds.x}, y=$
     const response = await providerFetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "x-api-key": keys.anthropic },
-      body: JSON.stringify({ model: "claude-3-5-haiku-latest", max_tokens: 2200, temperature: 0.1, messages: [{ role: "user", content }] }),
+      body: JSON.stringify({ model: "claude-3-5-haiku-latest", max_tokens: maxOutputTokens, temperature: 0.1, messages: [{ role: "user", content }] }),
       signal,
     });
     const payload = await readProviderResponseJson<{ content?: Array<{ type: string; text?: string }>; error?: { message?: string } }>(response, "Anthropic");

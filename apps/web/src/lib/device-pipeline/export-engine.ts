@@ -247,11 +247,22 @@ async function createAdtCompatibleFiles(book: DeviceBook, title: string) {
     }
     files[`content/i18n/${locale}/videos.json`] = json(videoMap);
   }
+  // Every page image is already inlined as a base64 data URI in page.html
+  // (see book-workspace.tsx's persistentImageUrl/createGeometryStoryboardPage),
+  // and no packager below ever reads from images/*.png. Dumping every asset
+  // here unconditionally used to double every book's export weight for
+  // nothing; only assets that never made it into any rendered page are worth
+  // keeping as a safety net.
+  const referencedAssetIds = new Set<string>();
+  for (const page of pages)
+    for (const match of page.html.matchAll(/data-asset-id="([^"]+)"/g))
+      referencedAssetIds.add(match[1]!);
   for (const page of book.extractedPages ?? [])
     for (const asset of page.assets ?? [])
-      files[`images/${safe(asset.id)}.png`] = new Uint8Array(
-        asset.bytes ?? (await asset.blob.arrayBuffer()),
-      );
+      if (!referencedAssetIds.has(asset.id))
+        files[`images/${safe(asset.id)}.png`] = new Uint8Array(
+          asset.bytes ?? (await asset.blob.arrayBuffer()),
+        );
   return files;
 }
 
